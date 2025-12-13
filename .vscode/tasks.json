@@ -1,0 +1,13 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PyInstaller build",
+      "type": "shell",
+      "command": "pyinstaller mmt_app.spec --noconfirm",
+      "options": { "venv": ".venv" },
+      "group": "build",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+QMainWindow {
+    background: #0f172a;
+    color: #e2e8f0;
+}
+
+QLabel#statusLabel {
+    font-size: 18px;
+    font-weight: 600;
+    padding: 8px 4px;
+}
+
+QPushButton {
+    background: #22c55e;
+    color: #0b1020;
+    border: none;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background: #16a34a;
+}
+
+QPushButton:pressed {
+    background: #15803d;
+}
+
+QTextEdit {
+    background: #111827;
+    color: #e5e7eb;
+    border: 1px solid #1f2937;
+    border-radius: 6px;
+}
