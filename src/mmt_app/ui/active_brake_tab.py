@@ -6,21 +6,23 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
-from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+from PySide6.QtCharts import QChart, QLineSeries, QValueAxis
 from PySide6.QtCore import QPointF, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import (
-    QComboBox,
+    QCheckBox,
     QFormLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QVBoxLayout,
     QWidget,
     QStyle,
 )
 
 from ..config import ActiveBrakeConfig, load_active_brake_config, save_active_brake_config
+from .watermark_chart_view import WatermarkChartView
 
 
 @dataclass
@@ -53,10 +55,21 @@ class ActiveBrakeTab(QWidget):
         self._timer = QTimer(interval=40)
         self._timer.timeout.connect(self._on_tick)
 
-        self.grid_combo = QComboBox()
-        for step in range(5, 55, 5):
-            self.grid_combo.addItem(f"{step}%", step)
-        self.grid_combo.currentIndexChanged.connect(self._on_grid_changed)
+        self.grid_slider = QSlider(Qt.Horizontal)
+        self.grid_slider.setRange(10, 50)
+        self.grid_slider.setSingleStep(5)
+        self.grid_slider.setPageStep(5)
+        self.grid_slider.setTickInterval(5)
+        self.grid_slider.setTickPosition(QSlider.TicksBelow)
+        self.grid_slider.setValue(10)
+        self.grid_slider.valueChanged.connect(self._on_grid_changed)
+        self.grid_value_label = QLabel()
+        self._update_grid_value_label(self.grid_slider.value())
+        grid_row = QWidget()
+        grid_row_layout = QHBoxLayout(grid_row)
+        grid_row_layout.setContentsMargins(0, 0, 0, 0)
+        grid_row_layout.addWidget(self.grid_slider, 1)
+        grid_row_layout.addWidget(self.grid_value_label)
 
         self.status = QLabel("Press Start, then match the red target as it crosses the center line.")
 
@@ -67,6 +80,9 @@ class ActiveBrakeTab(QWidget):
         self.reset_btn = QPushButton("Reset")
         self.reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         self.reset_btn.clicked.connect(self.reset)
+        self.watermark_checkbox = QCheckBox("Show watermark")
+        self.watermark_checkbox.setChecked(True)
+        self.watermark_checkbox.stateChanged.connect(self._on_watermark_toggled)
 
         (
             self.chart,
@@ -76,11 +92,11 @@ class ActiveBrakeTab(QWidget):
             self.axis_x,
             self.axis_y,
         ) = self._create_chart()
-        self.chart_view = QChartView(self.chart)
-        self.chart_view.setRenderHint(QPainter.Antialiasing)
+        self.chart_view = WatermarkChartView(self.chart)
 
         controls = QFormLayout()
-        controls.addRow("Grid division", self.grid_combo)
+        controls.addRow("Grid division", grid_row)
+        controls.addRow("Watermark", self.watermark_checkbox)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
@@ -94,6 +110,7 @@ class ActiveBrakeTab(QWidget):
         layout.addWidget(self.chart_view, stretch=1)
         layout.addWidget(self.status)
         self.setLayout(layout)
+        self.chart_view.set_watermark_visible(self.watermark_checkbox.isChecked())
 
         self._state = _ActiveBrakeState(
             running=False,
@@ -146,22 +163,30 @@ class ActiveBrakeTab(QWidget):
 
     def _save_config(self) -> None:
         """Persist the current grid spacing to config."""
-        step = int(self.grid_combo.currentData() or 10)
+        step = int(self.grid_slider.value())
         save_active_brake_config(ActiveBrakeConfig(grid_step_percent=step))
 
-    def _on_grid_changed(self) -> None:
-        """Handle user selecting a new grid step in the combo box."""
-        step = int(self.grid_combo.currentData() or 10)
+    def _on_grid_changed(self, value: int) -> None:
+        """Handle user selecting a new grid step via the slider."""
+        step = int(round(value / 5) * 5)
+        step = max(5, min(50, step))
+        if step != value:
+            self.grid_slider.blockSignals(True)
+            self.grid_slider.setValue(step)
+            self.grid_slider.blockSignals(False)
+        self._update_grid_value_label(step)
         self._apply_grid_step(step)
         self._save_config()
 
     def _apply_grid_step(self, step_percent: int) -> None:
-        """Apply grid tick spacing on the Y axis and sync the combo selection."""
+        """Apply grid tick spacing on the Y axis and sync the slider."""
         step_percent = max(5, min(50, int(step_percent)))
-        for i in range(self.grid_combo.count()):
-            if int(self.grid_combo.itemData(i)) == step_percent:
-                self.grid_combo.setCurrentIndex(i)
-                break
+        try:
+            self.grid_slider.blockSignals(True)
+            self.grid_slider.setValue(step_percent)
+        finally:
+            self.grid_slider.blockSignals(False)
+        self._update_grid_value_label(step_percent)
         tick_count = int((self._axis_y_max - self._axis_y_min) / step_percent) + 1
         try:
             self.axis_y.setTickCount(tick_count)
@@ -198,6 +223,7 @@ class ActiveBrakeTab(QWidget):
         self._render_target()
         self._render_user()
         self._render_midline()
+        self._set_watermark_percent(0)
         self.start_btn.setText("Start")
         self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.status.setText("Reset. Press Start when ready.")
@@ -246,6 +272,7 @@ class ActiveBrakeTab(QWidget):
         self._state.user_points.append(QPointF(self._mid_x, brake))
         self._state.user_cursor += 1
         self._render_user()
+        self._set_watermark_percent(brake)
 
     def _advance_user_points(self) -> None:
         """Scroll user points left with the target to create the trailing trace."""
@@ -380,6 +407,7 @@ class ActiveBrakeTab(QWidget):
 
     def _on_tick(self) -> None:
         """Advance target and, when running, record and scroll user points."""
+        self._set_watermark_percent(self._clamp_y(float(self._read_brake_percent())))
         self._advance_target()
         if self._state.running:
             self._advance_user_points()
@@ -388,6 +416,19 @@ class ActiveBrakeTab(QWidget):
     def _clamp_y(self, value: float) -> float:
         """Clamp a value to the visible Y range."""
         return max(self._axis_y_min, min(self._axis_y_max, value))
+
+    def _update_grid_value_label(self, step_percent: int) -> None:
+        self.grid_value_label.setText(f"{int(step_percent)}%")
+
+    def _set_watermark_percent(self, value: float) -> None:
+        try:
+            self.chart_view.set_watermark_text(f"{int(round(value))}")
+            self.chart_view.set_watermark_visible(self.watermark_checkbox.isChecked())
+        except Exception:
+            pass
+
+    def _on_watermark_toggled(self, state: int) -> None:
+        self.chart_view.set_watermark_visible(bool(state))
 
     def set_update_rate(self, hz: int) -> None:
         """Adjust timer interval for how often the active brake chart ticks."""

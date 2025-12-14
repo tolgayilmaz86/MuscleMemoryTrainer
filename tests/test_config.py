@@ -22,6 +22,8 @@ def test_save_and_load_profile_roundtrip(tmp_path: Path, monkeypatch) -> None:
         product_string="Wheel",
         report_len=32,
         steering_offset=9,
+        steering_center=120,
+        steering_range=80,
     )
     ui = config.UiConfig(throttle_target=70, brake_target=30, grid_step_percent=15)
     profile = config.InputProfile(pedals=pedals, wheel=wheel, ui=ui)

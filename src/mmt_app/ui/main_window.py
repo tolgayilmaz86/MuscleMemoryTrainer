@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QSizePolicy,
+    QDialog,
 )
 
 from ..config import InputProfile, PedalsConfig, UiConfig, WheelConfig, load_input_profile, save_input_profile, save_ui_config
@@ -89,6 +90,8 @@ class MainWindow(QMainWindow):
         self._active_samples: list[list[int]] = []
         self._calibration_timer = QTimer()
         self._calibration_timer.timeout.connect(self._capture_calibration_sample)
+        self._steering_cal_timer = QTimer()
+        self._steering_cal_timer.timeout.connect(self._capture_steering_calibration_sample)
 
         self._default_sound_path = _resource_path("beep.mp3")
         self._audio_output = QAudioOutput()
@@ -99,9 +102,20 @@ class MainWindow(QMainWindow):
         self._sound_checkboxes: dict[str, QCheckBox] = {}
         self._sound_files: dict[str, QLineEdit] = {}
         self._update_rate = 20
-        self._show_steering = True
+        self._show_steering = False
         self._steering_alpha = 0.08  # smoothing factor to dampen steering jitter
         self._steering_deadband = 1.5  # degrees of change to ignore small noise
+        self._steering_center = 128
+        self._steering_range = 127
+        self._steering_cal_stage: str | None = None
+        self._steering_center_samples: list[int] = []
+        self._steering_left_samples: list[int] = []
+        self._steering_right_samples: list[int] = []
+        self._steering_manual_applied = False
+        self._steering_cal_dialog: QDialog | None = None
+        self._steering_cal_label: QLabel | None = None
+        self._steering_cal_start_btn: QPushButton | None = None
+        self._steering_pending_stage: str | None = None
         self.update_rate_row = self._create_update_rate_row()
 
         telemetry_tab = self._build_telemetry_tab()
@@ -178,12 +192,21 @@ class MainWindow(QMainWindow):
         brake_target_row_layout.addWidget(self.brake_target, stretch=1)
         brake_target_row_layout.addWidget(self.brake_target_value)
 
-        self.grid_step_combo = QComboBox()
-        for step in range(10, 55, 5):
-            self.grid_step_combo.addItem(f"{step}%", step)
-        self.grid_step_combo.setCurrentIndex(0)
-        self.grid_step_combo.currentIndexChanged.connect(self._on_grid_step_changed)
-        self.grid_step_combo.currentIndexChanged.connect(self._schedule_save_ui_settings)
+        self.grid_step_slider = QSlider(Qt.Horizontal)
+        self.grid_step_slider.setRange(5, 50)
+        self.grid_step_slider.setSingleStep(5)
+        self.grid_step_slider.setPageStep(5)
+        self.grid_step_slider.setTickInterval(5)
+        self.grid_step_slider.setTickPosition(QSlider.TicksBelow)
+        self.grid_step_slider.setValue(10)
+        self.grid_step_slider.valueChanged.connect(self._on_grid_step_changed)
+        self.grid_step_slider.valueChanged.connect(self._schedule_save_ui_settings)
+        self.grid_step_value = QLabel("10%")
+        grid_row = QWidget()
+        grid_row_layout = QHBoxLayout(grid_row)
+        grid_row_layout.setContentsMargins(0, 0, 0, 0)
+        grid_row_layout.addWidget(self.grid_step_slider, stretch=1)
+        grid_row_layout.addWidget(self.grid_step_value)
 
         self.show_steering_checkbox = QCheckBox("Show steering trace")
         self.show_steering_checkbox.setChecked(self._show_steering)
@@ -199,7 +222,7 @@ class MainWindow(QMainWindow):
         controls = QFormLayout()
         controls.addRow("Throttle target", throttle_target_row)
         controls.addRow("Brake target", brake_target_row)
-        controls.addRow("Grid division", self.grid_step_combo)
+        controls.addRow("Grid division", grid_row)
         controls.addRow("", self.show_steering_checkbox)
         controls.addRow("Update rate", self.update_rate_row)
 
@@ -293,6 +316,13 @@ class MainWindow(QMainWindow):
         self.steering_offset = QSpinBox()
         self.steering_offset.setRange(0, MAX_REPORT_LEN - 1)
         self.steering_offset.setValue(2)
+        self.steering_center_spin = QSpinBox()
+        self.steering_center_spin.setRange(0, 255)
+        self.steering_center_spin.setValue(self._steering_center)
+        self.steering_range_spin = QSpinBox()
+        self.steering_range_spin.setRange(1, 255)
+        self.steering_range_spin.setValue(self._steering_range)
+        self.steering_range_spin.setSuffix(" span")
 
         refresh_btn = QPushButton("Refresh devices")
         refresh_btn.clicked.connect(self.refresh_devices)
@@ -309,6 +339,10 @@ class MainWindow(QMainWindow):
         cal_brake_btn.clicked.connect(lambda: self.start_calibration("pedals", "brake"))
         cal_steer_btn = QPushButton("Calibrate Steering (turn)")
         cal_steer_btn.clicked.connect(lambda: self.start_calibration("wheel", "steering"))
+        cal_steer_range_btn = QPushButton("Calibrate Steering Range")
+        cal_steer_range_btn.clicked.connect(self.calibrate_steering_range)
+        apply_steer_btn = QPushButton("Apply center/range")
+        apply_steer_btn.clicked.connect(self._apply_manual_steering_range)
 
         form = QFormLayout()
         form.addRow("Pedals device", self.pedals_device_combo)
@@ -318,6 +352,10 @@ class MainWindow(QMainWindow):
         form.addRow("Wheel device", self.wheel_device_combo)
         form.addRow("Wheel report length (bytes)", self.wheel_report_len)
         form.addRow("Steering byte offset", self.steering_offset)
+        self.steering_center_label = QLabel("Center: 128 | Range: 127")
+        form.addRow("Steering calibration", self.steering_center_label)
+        form.addRow("Steering center", self.steering_center_spin)
+        form.addRow("Steering span", self.steering_range_spin)
 
         buttons = QHBoxLayout()
         buttons.addWidget(refresh_btn)
@@ -328,6 +366,8 @@ class MainWindow(QMainWindow):
         cal_buttons.addWidget(cal_throttle_btn)
         cal_buttons.addWidget(cal_brake_btn)
         cal_buttons.addWidget(cal_steer_btn)
+        cal_buttons.addWidget(cal_steer_range_btn)
+        cal_buttons.addWidget(apply_steer_btn)
         cal_buttons.addStretch()
 
         input_group = QGroupBox("Input Settings")
@@ -371,7 +411,7 @@ class MainWindow(QMainWindow):
 
     def _build_static_brake_tab(self) -> QWidget:
         """Create the Static Brake training tab."""
-        return StaticBrakeTab(read_brake_percent=lambda: float(self.last_sample.brake))
+        return StaticBrakeTab(read_brake_percent=self._read_brake_for_static_tab)
 
     def _build_active_brake_tab(self) -> QWidget:
         """Create the Active Brake training tab."""
@@ -381,6 +421,15 @@ class MainWindow(QMainWindow):
         """
         Provide live brake input to the Active Brake tab even when the main telemetry
         timer is paused. Reuses the shared input reader for HID/simulator values.
+        """
+        sample = self._read_inputs()
+        self.last_sample = sample
+        return float(sample.brake)
+
+    def _read_brake_for_static_tab(self) -> float:
+        """
+        Provide live brake input to Static Brake tab even when main timer is paused.
+        Reuses shared input reader for HID/simulator values.
         """
         sample = self._read_inputs()
         self.last_sample = sample
@@ -517,6 +566,8 @@ class MainWindow(QMainWindow):
                 product_string=str(self.wheel_device.product_string),
                 report_len=int(self.wheel_report_len.value()),
                 steering_offset=int(self.steering_offset.value()),
+                steering_center=int(self._steering_center),
+                steering_range=int(self._steering_range),
             )
             save_input_profile(InputProfile(pedals=pedals_cfg, wheel=wheel_cfg, ui=None))
             self.device_status.setText("Saved pedals + wheel mappings to config.ini.")
@@ -538,6 +589,9 @@ class MainWindow(QMainWindow):
         if wheel_cfg:
             self.wheel_report_len.setValue(max(1, min(MAX_REPORT_LEN, wheel_cfg.report_len)))
             self.steering_offset.setValue(max(0, min(MAX_REPORT_LEN - 1, wheel_cfg.steering_offset)))
+            self._steering_center = int(wheel_cfg.steering_center)
+            self._steering_range = max(1, int(wheel_cfg.steering_range))
+            self._update_steering_calibration_label()
 
         if ui_cfg:
             self.throttle_target.setValue(max(0, min(100, ui_cfg.throttle_target)))
@@ -560,6 +614,7 @@ class MainWindow(QMainWindow):
                 brake_enabled=True,
                 brake_path=str(self._default_sound_path),
             )
+        self._update_steering_calibration_label()
 
         self.refresh_devices()
 
@@ -583,13 +638,21 @@ class MainWindow(QMainWindow):
             self.device_status.setText("Loaded settings from config.ini.")
 
     def _set_grid_step(self, step_percent: int) -> None:
-        """Set the grid combo to the requested step if present, otherwise default."""
-        step_percent = int(step_percent)
-        for i in range(self.grid_step_combo.count()):
-            if int(self.grid_step_combo.itemData(i)) == step_percent:
-                self.grid_step_combo.setCurrentIndex(i)
-                return
-        self.grid_step_combo.setCurrentIndex(0)
+        """Set the telemetry grid step via the slider, snapping to 5% increments."""
+        step_percent = max(5, min(50, int(round(step_percent / 5) * 5)))
+        if hasattr(self, "grid_step_slider"):
+            try:
+                self.grid_step_slider.blockSignals(True)
+                self.grid_step_slider.setValue(step_percent)
+            finally:
+                self.grid_step_slider.blockSignals(False)
+        self._update_grid_step_value(step_percent)
+        if hasattr(self, "telemetry_chart"):
+            self.telemetry_chart.set_grid_step(step_percent=step_percent)
+
+    def _update_grid_step_value(self, step_percent: int) -> None:
+        if hasattr(self, "grid_step_value"):
+            self.grid_step_value.setText(f"{int(step_percent)}%")
 
     def start_calibration(self, device_kind: str, axis: str) -> None:
         """Start an interactive calibration for a single axis on one device."""
@@ -665,6 +728,153 @@ class MainWindow(QMainWindow):
             return
         self._active_samples.append(report)
 
+    def calibrate_steering_range(self) -> None:
+        """Calibrate steering center/range (for different wheel rotation angles)."""
+        if not self.wheel_session.is_open:
+            self.device_status.setText("Select a wheel HID device first.")
+            return
+        if self.steering_offset.value() >= self.wheel_report_len.value():
+            self.device_status.setText("Adjust steering offset/length first.")
+            return
+
+        # Reset samples and show guided dialog.
+        self._steering_center_samples = []
+        self._steering_left_samples = []
+        self._steering_right_samples = []
+        self._steering_pending_stage = "center"
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Steering Calibration")
+        label = QLabel("Step 1 of 3: Leave wheel centered.\nClick Start when ready.")
+        label.setWordWrap(True)
+        start_btn = QPushButton("Start")
+        cancel_btn = QPushButton("Cancel")
+        start_btn.clicked.connect(self._start_pending_steering_stage)
+        cancel_btn.clicked.connect(lambda: self._cancel_steering_calibration(dialog=dlg))
+
+        btns = QHBoxLayout()
+        btns.addStretch()
+        btns.addWidget(start_btn)
+        btns.addWidget(cancel_btn)
+
+        layout = QVBoxLayout()
+        layout.addWidget(label)
+        layout.addLayout(btns)
+        dlg.setLayout(layout)
+
+        self._steering_cal_dialog = dlg
+        self._steering_cal_label = label
+        self._steering_cal_start_btn = start_btn
+        self._steering_cal_dialog.show()
+
+    def _start_pending_steering_stage(self) -> None:
+        """Begin capture for the current pending stage (center/left/right)."""
+        stage = self._steering_pending_stage
+        if not stage:
+            return
+        self._steering_cal_stage = stage
+        if stage == "center":
+            self._steering_center_samples = []
+            text = "Capturing center... keep wheel still for 3s."
+        elif stage == "left":
+            self._steering_left_samples = []
+            text = "Capturing full left... hold for 3s."
+        else:
+            self._steering_right_samples = []
+            text = "Capturing full right... hold for 3s."
+        self._set_steering_dialog_text(text)
+        if self._steering_cal_start_btn:
+            self._steering_cal_start_btn.setEnabled(False)
+        self._steering_cal_timer.start(20)
+        QTimer.singleShot(3000, self._complete_steering_stage)
+
+    def _set_steering_dialog_text(self, text: str) -> None:
+        if self._steering_cal_label:
+            self._steering_cal_label.setText(text)
+
+    def _complete_steering_stage(self) -> None:
+        """Stop current stage and advance to next step or finish."""
+        self._steering_cal_timer.stop()
+        stage = self._steering_cal_stage
+        self._steering_cal_stage = None
+        if stage == "center":
+            self._steering_pending_stage = "left"
+            self._set_steering_dialog_text("Step 2 of 3: Turn wheel full left. Click Start when ready.")
+        elif stage == "left":
+            self._steering_pending_stage = "right"
+            self._set_steering_dialog_text("Step 3 of 3: Turn wheel full right. Click Start when ready.")
+        elif stage == "right":
+            self._steering_pending_stage = None
+            self._finish_steering_range_calibration()
+            self._close_steering_cal_dialog()
+            return
+        if self._steering_cal_start_btn:
+            self._steering_cal_start_btn.setEnabled(True)
+
+    def _cancel_steering_calibration(self, dialog: QDialog | None = None) -> None:
+        """Abort steering calibration and cleanup dialog/timers."""
+        self._steering_cal_timer.stop()
+        self._steering_pending_stage = None
+        self._steering_cal_stage = None
+        self._close_steering_cal_dialog(dialog)
+        self.device_status.setText("Steering calibration canceled.")
+
+    def _close_steering_cal_dialog(self, dialog: QDialog | None = None) -> None:
+        dlg = dialog or self._steering_cal_dialog
+        if dlg is not None:
+            try:
+                dlg.close()
+            except Exception:
+                pass
+        self._steering_cal_dialog = None
+        self._steering_cal_label = None
+        self._steering_cal_start_btn = None
+
+    def _capture_steering_calibration_sample(self) -> None:
+        if not self.wheel_session.is_open or not self._steering_cal_stage:
+            return
+        report = self.wheel_session.read_latest_report(
+            report_len=self.wheel_report_len.value(),
+            max_reads=MAX_READS_PER_TICK,
+        )
+        if not report:
+            return
+        s_off = self.steering_offset.value()
+        if s_off >= len(report):
+            return
+        value = int(report[s_off])
+        if self._steering_cal_stage == "center":
+            self._steering_center_samples.append(value)
+        elif self._steering_cal_stage == "left":
+            self._steering_left_samples.append(value)
+        elif self._steering_cal_stage == "right":
+            self._steering_right_samples.append(value)
+
+    def _finish_steering_range_calibration(self) -> None:
+        self._steering_cal_timer.stop()
+        self._steering_cal_stage = None
+        if not self._steering_center_samples or not (self._steering_left_samples or self._steering_right_samples):
+            self.device_status.setText("Steering calibration failed: not enough data.")
+            return
+        center = int(sum(self._steering_center_samples) / max(1, len(self._steering_center_samples)))
+        left_min = min(self._steering_left_samples) if self._steering_left_samples else center
+        right_max = max(self._steering_right_samples) if self._steering_right_samples else center
+        span = max(center - left_min, right_max - center, 1)
+        self._steering_center = center
+        self._steering_range = span
+        self.steering_center_spin.setValue(center)
+        self.steering_range_spin.setValue(span)
+        self._update_steering_calibration_label()
+        try:
+            self.save_current_mapping()
+            self.device_status.setText(
+                f"Steering calibrated: center={center}, range={span}. Saved to config.ini."
+            )
+        except Exception:
+            self.device_status.setText(
+                f"Steering calibrated: center={center}, range={span}. Click Save to persist."
+            )
+
     def toggle_stream(self) -> None:
         """Start or pause the main telemetry timer."""
         if self.timer.isActive():
@@ -698,8 +908,14 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _on_grid_step_changed(self) -> None:
-        """Update the telemetry grid step when the combo changes."""
-        step = int(self.grid_step_combo.currentData() or 10)
+        """Update the telemetry grid step when the slider changes."""
+        step = int(round(self.grid_step_slider.value() / 5) * 5)
+        step = max(5, min(50, step))
+        if step != self.grid_step_slider.value():
+            self.grid_step_slider.blockSignals(True)
+            self.grid_step_slider.setValue(step)
+            self.grid_step_slider.blockSignals(False)
+        self._update_grid_step_value(step)
         self.telemetry_chart.set_grid_step(step_percent=step)
         # Keep tick marks sensible when changing rate/step together.
 
@@ -735,12 +951,34 @@ class MainWindow(QMainWindow):
             self.show_steering_checkbox.setChecked(self._show_steering)
             self.show_steering_checkbox.blockSignals(False)
 
+    def _update_steering_calibration_label(self) -> None:
+        """Refresh the steering center/range label in settings."""
+        if hasattr(self, "steering_center_label"):
+            self.steering_center_label.setText(
+                f"Center: {int(self._steering_center)} | Range: {int(self._steering_range)}"
+            )
+
+    def _apply_manual_steering_range(self) -> None:
+        """Allow users to manually set steering center/range from spinboxes."""
+        self._steering_center = int(self.steering_center_spin.value())
+        self._steering_range = max(1, int(self.steering_range_spin.value()))
+        self._update_steering_calibration_label()
+        try:
+            self.save_current_mapping()
+            self.device_status.setText(
+                f"Steering center/range updated (center={self._steering_center}, range={self._steering_range}). Saved."
+            )
+        except Exception:
+            self.device_status.setText(
+                f"Steering center/range updated (center={self._steering_center}, range={self._steering_range}). Click Save to persist."
+            )
+
     def _save_ui_settings(self) -> None:
         """Persist UI-related settings (targets, grid, sounds, update rate)."""
         cfg = UiConfig(
             throttle_target=int(self.throttle_target.value()),
             brake_target=int(self.brake_target.value()),
-            grid_step_percent=int(self.grid_step_combo.currentData() or 10),
+            grid_step_percent=int(self.grid_step_slider.value()),
             update_hz=int(self.update_rate_slider.value()),
             show_steering=bool(self.show_steering_checkbox.isChecked()),
             throttle_sound_enabled=self._sound_enabled("throttle"),
@@ -904,7 +1142,7 @@ class MainWindow(QMainWindow):
                     if latest:
                         s_off = self.steering_offset.value()
                         if s_off < len(latest):
-                            steering_raw = self._scale_axis(latest[s_off], hi=255) * 200 - 100
+                            steering_raw = self._apply_steering(latest[s_off])
                             steering = self._smooth_steering(steering_raw, self.last_sample.steering)
 
                 self.last_sample = TelemetrySample(throttle, brake, steering)
@@ -921,6 +1159,14 @@ class MainWindow(QMainWindow):
         steering = self._smooth_steering(steering_raw, self.last_sample.steering)
         self.last_sample = TelemetrySample(throttle=throttle, brake=brake, steering=steering)
         return self.last_sample
+
+    def _apply_steering(self, raw_value: int) -> float:
+        """Convert raw steering byte to -100..100 using calibrated center/range."""
+        center = float(self._steering_center or 128)
+        span = float(max(1, self._steering_range or 127))
+        normalized = (float(raw_value) - center) / span
+        normalized = max(-1.0, min(1.0, normalized))
+        return normalized * 100.0
 
     def _smooth_steering(self, raw: float, prev: float) -> float:
         """Lightly low-pass filter steering to avoid spiky traces."""

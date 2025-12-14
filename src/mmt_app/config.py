@@ -26,6 +26,8 @@ class PedalsConfig(DeviceConfig):
 @dataclass(frozen=True)
 class WheelConfig(DeviceConfig):
     steering_offset: int
+    steering_center: int
+    steering_range: int
 
 
 @dataclass(frozen=True)
@@ -45,7 +47,7 @@ class UiConfig:
     brake_target: int
     grid_step_percent: int
     update_hz: int = 20
-    show_steering: bool = True
+    show_steering: bool = False
     throttle_sound_enabled: bool = True
     throttle_sound_path: str | None = None
     brake_sound_enabled: bool = True
@@ -85,6 +87,8 @@ def _load_device_section(parser: configparser.ConfigParser, section_name: str) -
             "throttle_offset": section.get("throttle_offset"),
             "brake_offset": section.get("brake_offset"),
             "steering_offset": section.get("steering_offset"),
+            "steering_center": section.get("steering_center"),
+            "steering_range": section.get("steering_range"),
         }
     except Exception:
         return None
@@ -136,6 +140,8 @@ def load_wheel_config() -> Optional[WheelConfig]:
             product_string=str(data["product_string"]),
             report_len=int(data["report_len"]),
             steering_offset=int(data["steering_offset"]),
+            steering_center=int(data["steering_center"] or 128),
+            steering_range=int(data["steering_range"] or 127),
         )
     except Exception:
         return None
@@ -170,6 +176,8 @@ def save_wheel_config(cfg: WheelConfig) -> None:
         "product_string": cfg.product_string,
         "report_len": str(cfg.report_len),
         "steering_offset": str(cfg.steering_offset),
+        "steering_center": str(int(cfg.steering_center)),
+        "steering_range": str(int(cfg.steering_range)),
     }
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
@@ -200,7 +208,7 @@ def load_ui_config() -> Optional[UiConfig]:
             brake_target=int(section.get("brake_target", "40")),
             grid_step_percent=int(section.get("grid_step_percent", "10")),
             update_hz=int(section.get("update_hz", "20")),
-            show_steering=section.getboolean("show_steering", fallback=True),
+            show_steering=section.getboolean("show_steering", fallback=False),
             throttle_sound_enabled=section.getboolean("throttle_sound_enabled", fallback=True),
             throttle_sound_path=section.get("throttle_sound_path", fallback="").strip() or None,
             brake_sound_enabled=section.getboolean("brake_sound_enabled", fallback=True),
