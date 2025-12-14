@@ -26,6 +26,73 @@ QPushButton:pressed {
     background: #15803d;
 }
 
+QProgressBar#throttleBar,
+QProgressBar#brakeBar {
+    background: #0b1224;
+    border: 1px solid #1f2937;
+    border-radius: 6px;
+}
+
+QProgressBar#throttleBar::chunk {
+    background-color: qlineargradient(x1:0, y1:1, x2:0, y2:0, stop:0 #16a34a, stop:1 #22c55e);
+    border-radius: 5px;
+}
+
+QProgressBar#brakeBar::chunk {
+    background-color: qlineargradient(x1:0, y1:1, x2:0, y2:0, stop:0 #dc2626, stop:1 #ef4444);
+    border-radius: 5px;
+}
+
+QLabel#throttleBarLabel,
+QLabel#brakeBarLabel {
+    font-weight: 800;
+    letter-spacing: 0.5px;
+}
+
+QSlider#throttleTargetSlider::groove:horizontal,
+QSlider#brakeTargetSlider::groove:horizontal {
+    background: #1f2937;
+    height: 8px;
+    border-radius: 4px;
+}
+
+QSlider#throttleTargetSlider::sub-page:horizontal {
+    background: #22c55e;
+    border-radius: 4px;
+}
+
+QSlider#brakeTargetSlider::sub-page:horizontal {
+    background: #ef4444;
+    border-radius: 4px;
+}
+
+QSlider#throttleTargetSlider::add-page:horizontal,
+QSlider#brakeTargetSlider::add-page:horizontal {
+    background: #111827;
+    border-radius: 4px;
+}
+
+QSlider#throttleTargetSlider::handle:horizontal {
+    background: #e2e8f0;
+    border: 2px solid #22c55e;
+    width: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}
+
+QSlider#brakeTargetSlider::handle:horizontal {
+    background: #e2e8f0;
+    border: 2px solid #ef4444;
+    width: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}
+
+QLabel#throttleTargetValue,
+QLabel#brakeTargetValue {
+    font-weight: 700;
+}
+
 QTextEdit {
     background: #111827;
     color: #e5e7eb;

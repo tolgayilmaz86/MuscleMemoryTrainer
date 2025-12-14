@@ -34,6 +34,7 @@ A minimal PySide6 desktop starter that you can run directly or package as a stan
   pyinstaller mmt_app.spec --noconfirm
   ```
 - Output appears under `dist/MuscleMemoryTrainer/`. Test on a clean machine to confirm Qt plugins and resources are present.
+- Input note: controller detection currently uses `hidapi` (raw HID), so you may need to set report byte offsets per device in the app.
 - Customize:
   - Add an icon via `icon="path/to/app.ico"` inside `EXE(...)`.
   - Switch to one-file by setting `onefile=True` in `EXE(...)` (trade-off: slower startup due to extraction).
@@ -42,3 +43,15 @@ A minimal PySide6 desktop starter that you can run directly or package as a stan
 - Keep business logic out of UI slots; place it in `services/` or `models/` modules if the app grows.
 - Use `resource_path()` from `app.py` whenever you need to read bundled assets, so paths work both in dev and in packaged builds.
 - Run `pytest` for quick checks; add more tests around non-UI logic as the app evolves.
+
+## Input calibration
+- Use the “Input Settings” tab to select your pedals HID device and wheel HID device.
+- Calibrate throttle/brake on the pedals device, and steering on the wheel device (follow the prompt).
+- Click “Save to config.ini” to persist the discovered report lengths and byte offsets per device.
+- Targets and grid division are also persisted to `config.ini` and restored on launch.
+- The file is written to your user config folder (`AppConfigLocation`) as `config.ini`.
+
+## Static Brake mode
+- Use the “Static Brake” tab to practice matching a predefined brake trace (red) with your pedal input (gray).
+- Presets are built-in; you can save your recorded attempt as a custom trace (“Save trace…”) and it will be stored in `config.ini`.
+- Use “Import/Export trace…” to move traces between PCs (JSON files).

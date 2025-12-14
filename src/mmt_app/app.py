@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -34,6 +35,17 @@ def load_stylesheet(app: QApplication) -> None:
     app.setStyleSheet(theme_file.read_text(encoding="utf-8"))
 
 
+def ensure_std_streams() -> None:
+    """
+    Ensure stdout/stderr are usable (PyInstaller windowed apps can set them to None).
+    Needed for libraries like pysdl3 that log to stderr at import time.
+    """
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w")
+    if sys.stderr is None:
+        sys.stderr = sys.stdout
+
+
 def create_application() -> QApplication:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s - %(message)s")
     app = QApplication(sys.argv)
@@ -45,6 +57,7 @@ def create_application() -> QApplication:
 
 
 def create_main_window() -> MainWindow:
+    ensure_std_streams()
     from .ui.main_window import MainWindow  # Local import avoids circular/reference timing issues.
 
     return MainWindow(app_name=APP_NAME, version=APP_VERSION)
