@@ -44,6 +44,10 @@ class UiConfig:
     throttle_target: int
     brake_target: int
     grid_step_percent: int
+    throttle_sound_enabled: bool = True
+    throttle_sound_path: str | None = None
+    brake_sound_enabled: bool = True
+    brake_sound_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,13 @@ class StaticBrakeConfig:
     """Persistence for Static Brake mode."""
 
     selected_trace: str
+
+
+@dataclass(frozen=True)
+class ActiveBrakeConfig:
+    """Persistence for Active Brake mode."""
+
+    grid_step_percent: int
 
 
 def config_path() -> Path:
@@ -186,6 +197,10 @@ def load_ui_config() -> Optional[UiConfig]:
             throttle_target=int(section.get("throttle_target", "60")),
             brake_target=int(section.get("brake_target", "40")),
             grid_step_percent=int(section.get("grid_step_percent", "10")),
+            throttle_sound_enabled=section.getboolean("throttle_sound_enabled", fallback=True),
+            throttle_sound_path=section.get("throttle_sound_path", fallback="").strip() or None,
+            brake_sound_enabled=section.getboolean("brake_sound_enabled", fallback=True),
+            brake_sound_path=section.get("brake_sound_path", fallback="").strip() or None,
         )
     except Exception:
         return None
@@ -198,6 +213,10 @@ def save_ui_config(cfg: UiConfig) -> None:
         "throttle_target": str(int(cfg.throttle_target)),
         "brake_target": str(int(cfg.brake_target)),
         "grid_step_percent": str(int(cfg.grid_step_percent)),
+        "throttle_sound_enabled": "true" if bool(cfg.throttle_sound_enabled) else "false",
+        "throttle_sound_path": cfg.throttle_sound_path or "",
+        "brake_sound_enabled": "true" if bool(cfg.brake_sound_enabled) else "false",
+        "brake_sound_path": cfg.brake_sound_path or "",
     }
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
@@ -261,6 +280,27 @@ def save_static_brake_trace(name: str, points: list[int]) -> None:
     if "static_brake_traces" not in parser:
         parser["static_brake_traces"] = {}
     parser["static_brake_traces"][safe_name] = json.dumps(normalized, separators=(",", ":"))
+    path = config_path()
+    with path.open("w", encoding="utf-8") as f:
+        parser.write(f)
+
+
+def load_active_brake_config() -> ActiveBrakeConfig:
+    path = config_path()
+    parser = configparser.ConfigParser()
+    parser.read(path, encoding="utf-8")
+    section = parser["active_brake"] if "active_brake" in parser else {}
+    try:
+        step = int(section.get("grid_step_percent", "10"))
+    except Exception:
+        step = 10
+    return ActiveBrakeConfig(grid_step_percent=max(5, min(50, step)))
+
+
+def save_active_brake_config(cfg: ActiveBrakeConfig) -> None:
+    parser = configparser.ConfigParser()
+    parser.read(config_path(), encoding="utf-8")
+    parser["active_brake"] = {"grid_step_percent": str(int(cfg.grid_step_percent))}
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
         parser.write(f)

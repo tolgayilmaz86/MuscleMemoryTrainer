@@ -6,20 +6,29 @@ Design notes:
 - Mappings are persisted to `config.ini` via `mmt_app.config`.
 """
 
+import sys
+from pathlib import Path
 from random import random
 from typing import List, Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QTimer, Qt, QUrl
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (
     QComboBox,
+    QCheckBox,
+    QFileDialog,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QPushButton,
     QProgressBar,
     QSlider,
     QSpinBox,
+    QStyle,
+    QStatusBar,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -32,6 +41,12 @@ from ..input.hid_backend import HidDeviceInfo, HidSession, enumerate_devices, hi
 from ..telemetry import TelemetrySample
 from .telemetry_chart import TelemetryChart
 from .static_brake_tab import StaticBrakeTab
+from .active_brake_tab import ActiveBrakeTab
+
+
+def _resource_path(*parts: str) -> Path:
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+    return base_path.joinpath("resources", *parts)
 
 MAX_REPORT_LEN = 1024
 MAX_READS_PER_TICK = 50
@@ -52,6 +67,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"{self.app_name} - v{self.version}")
         self.resize(1080, 600)
 
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+
         self.max_points = 200
         self.sample_index = 0
         self.last_sample = TelemetrySample(throttle=0.0, brake=0.0, steering=0.0)
@@ -70,13 +88,23 @@ class MainWindow(QMainWindow):
         self._calibration_timer = QTimer()
         self._calibration_timer.timeout.connect(self._capture_calibration_sample)
 
+        self._default_sound_path = _resource_path("beep.mp3")
+        self._audio_output = QAudioOutput()
+        self._media_player = QMediaPlayer()
+        self._media_player.setAudioOutput(self._audio_output)
+        self._throttle_target_hit = False
+        self._brake_target_hit = False
+        self._sound_checkboxes: dict[str, QCheckBox] = {}
+        self._sound_files: dict[str, QLineEdit] = {}
+
         telemetry_tab = self._build_telemetry_tab()
         settings_tab = self._build_settings_tab()
 
         tabs = QTabWidget()
         tabs.addTab(telemetry_tab, "Telemetry")
-        tabs.addTab(settings_tab, "Input Settings")
         tabs.addTab(self._build_static_brake_tab(), "Static Brake")
+        tabs.addTab(self._build_active_brake_tab(), "Active Brake")
+        tabs.addTab(settings_tab, "Settings")
         self.setCentralWidget(tabs)
 
         self.timer = QTimer(interval=50)
@@ -87,6 +115,7 @@ class MainWindow(QMainWindow):
         self._ui_save_timer.timeout.connect(self._save_ui_settings)
 
         self._load_persisted_config()
+        self._update_status()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         try:
@@ -96,8 +125,6 @@ class MainWindow(QMainWindow):
             super().closeEvent(event)
 
     def _build_telemetry_tab(self) -> QWidget:
-        self.status_label = QLabel("Ready to train.")
-
         self.throttle_target = QSlider(Qt.Horizontal)
         self.throttle_target.setRange(0, 100)
         self.throttle_target.setSingleStep(1)
@@ -148,8 +175,10 @@ class MainWindow(QMainWindow):
         self.grid_step_combo.currentIndexChanged.connect(self._schedule_save_ui_settings)
 
         self.start_button = QPushButton("Start")
+        self.start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.start_button.clicked.connect(self.toggle_stream)
         self.reset_button = QPushButton("Reset")
+        self.reset_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         self.reset_button.clicked.connect(self.reset_chart)
 
         controls = QFormLayout()
@@ -158,6 +187,7 @@ class MainWindow(QMainWindow):
         controls.addRow("Grid division", self.grid_step_combo)
 
         control_bar = QHBoxLayout()
+        control_bar.addStretch()
         control_bar.addWidget(self.start_button)
         control_bar.addWidget(self.reset_button)
         control_bar.addStretch()
@@ -215,7 +245,6 @@ class MainWindow(QMainWindow):
         chart_row.addWidget(bars_container)
 
         layout = QVBoxLayout()
-        layout.addWidget(self.status_label)
         layout.addLayout(controls)
         layout.addLayout(control_bar)
         layout.addLayout(chart_row, stretch=1)
@@ -251,6 +280,8 @@ class MainWindow(QMainWindow):
         apply_btn = QPushButton("Use selection")
         apply_btn.clicked.connect(self.apply_device_selection)
         save_btn = QPushButton("Save to config.ini")
+        save_btn.setText("Save all")
+        save_btn.setIcon(self.style().standardIcon(QStyle.SP_DialogSaveButton))
         save_btn.clicked.connect(self.save_current_mapping)
 
         cal_throttle_btn = QPushButton("Calibrate Throttle (press)")
@@ -272,7 +303,6 @@ class MainWindow(QMainWindow):
         buttons = QHBoxLayout()
         buttons.addWidget(refresh_btn)
         buttons.addWidget(apply_btn)
-        buttons.addWidget(save_btn)
         buttons.addStretch()
 
         cal_buttons = QHBoxLayout()
@@ -281,11 +311,35 @@ class MainWindow(QMainWindow):
         cal_buttons.addWidget(cal_steer_btn)
         cal_buttons.addStretch()
 
+        input_group = QGroupBox("Input Settings")
+        input_layout = QVBoxLayout()
+        input_layout.addLayout(form)
+        input_layout.addLayout(buttons)
+        input_layout.addLayout(cal_buttons)
+        input_layout.addWidget(self.device_status)
+        input_group.setLayout(input_layout)
+
+        throttle_row = self._build_sound_row(kind="throttle", label="Throttle target sound")
+        brake_row = self._build_sound_row(kind="brake", label="Brake target sound")
+
+        app_form = QFormLayout()
+        app_form.addRow("Throttle sound", throttle_row)
+        app_form.addRow("Brake sound", brake_row)
+
+        app_group = QGroupBox("App Settings")
+        app_layout = QVBoxLayout()
+        app_layout.addLayout(app_form)
+        app_group.setLayout(app_layout)
+
+        save_bar = QHBoxLayout()
+        save_bar.addStretch()
+        save_bar.addWidget(save_btn)
+        save_bar.addStretch()
+
         layout = QVBoxLayout()
-        layout.addLayout(form)
-        layout.addLayout(buttons)
-        layout.addLayout(cal_buttons)
-        layout.addWidget(self.device_status)
+        layout.addLayout(save_bar)
+        layout.addWidget(input_group)
+        layout.addWidget(app_group)
         layout.addStretch()
 
         container = QWidget()
@@ -296,6 +350,9 @@ class MainWindow(QMainWindow):
 
     def _build_static_brake_tab(self) -> QWidget:
         return StaticBrakeTab(read_brake_percent=lambda: float(self.last_sample.brake))
+
+    def _build_active_brake_tab(self) -> QWidget:
+        return ActiveBrakeTab(read_brake_percent=lambda: float(self.last_sample.brake))
 
     def refresh_devices(self) -> None:
         """Enumerate HID devices and populate pedals/wheel selectors."""
@@ -308,6 +365,7 @@ class MainWindow(QMainWindow):
             self.device_status.setText("hidapi not installed; using simulator input.")
             self.pedals_device_index = None
             self.wheel_device_index = None
+            self._update_status()
             return
 
         self.devices = enumerate_devices()
@@ -315,6 +373,7 @@ class MainWindow(QMainWindow):
             self.device_status.setText("No HID devices detected; using simulator.")
             self.pedals_device_index = None
             self.wheel_device_index = None
+            self._update_status()
             return
 
         for idx, dev in enumerate(self.devices):
@@ -327,6 +386,7 @@ class MainWindow(QMainWindow):
         self.device_status.setText("Select pedals + wheel devices and click 'Use selection'.")
         self.pedals_device_combo.setCurrentIndex(0)
         self.wheel_device_combo.setCurrentIndex(0)
+        self._update_status()
 
     def apply_device_selection(self) -> None:
         """Open the currently selected pedals and wheel devices."""
@@ -336,6 +396,7 @@ class MainWindow(QMainWindow):
             self.pedals_device = None
             self.wheel_device = None
             self.device_status.setText("No devices available; simulator mode.")
+            self._update_status()
             return
         self.pedals_device_index = int(self.pedals_device_combo.currentData())
         self.wheel_device_index = int(self.wheel_device_combo.currentData())
@@ -345,6 +406,7 @@ class MainWindow(QMainWindow):
             self.wheel_device_index = None
             self.pedals_device = None
             self.wheel_device = None
+            self._update_status()
             return
 
         try:
@@ -355,6 +417,7 @@ class MainWindow(QMainWindow):
             self.wheel_session.open(self.wheel_device)
 
             self.device_status.setText("Using selected pedals + wheel devices via HID.")
+            self._update_status()
         except Exception as exc:
             self.device_status.setText(f"HID open failed: {exc}; simulator mode.")
             self.pedals_device_index = None
@@ -363,11 +426,15 @@ class MainWindow(QMainWindow):
             self.wheel_device = None
             self.pedals_session.close()
             self.wheel_session.close()
+            self._update_status()
 
     def save_current_mapping(self) -> None:
-        """Persist the current device IDs, report lengths, and byte offsets."""
+        """Persist UI settings plus device IDs/report lengths/offsets (when available)."""
+        # Always persist UI (including sound paths) even if devices are missing.
+        self._save_ui_settings()
         if not self.pedals_device or not self.wheel_device:
-            self.device_status.setText("Select pedals and wheel devices first, then save.")
+            self.device_status.setText("Saved UI settings. Select pedals and wheel to save input mapping.")
+            self._update_status()
             return
         try:
             pedals_cfg = PedalsConfig(
@@ -386,8 +453,8 @@ class MainWindow(QMainWindow):
                 steering_offset=int(self.steering_offset.value()),
             )
             save_input_profile(InputProfile(pedals=pedals_cfg, wheel=wheel_cfg, ui=None))
-            self._save_ui_settings()
             self.device_status.setText("Saved pedals + wheel mappings to config.ini.")
+            self._update_status()
         except Exception as exc:
             self.device_status.setText(f"Save failed: {exc}")
 
@@ -410,6 +477,19 @@ class MainWindow(QMainWindow):
             self.throttle_target.setValue(max(0, min(100, ui_cfg.throttle_target)))
             self.brake_target.setValue(max(0, min(100, ui_cfg.brake_target)))
             self._set_grid_step(ui_cfg.grid_step_percent)
+            self._apply_sound_settings(
+                throttle_enabled=ui_cfg.throttle_sound_enabled,
+                throttle_path=ui_cfg.throttle_sound_path,
+                brake_enabled=ui_cfg.brake_sound_enabled,
+                brake_path=ui_cfg.brake_sound_path,
+            )
+        else:
+            self._apply_sound_settings(
+                throttle_enabled=True,
+                throttle_path=str(self._default_sound_path),
+                brake_enabled=True,
+                brake_path=str(self._default_sound_path),
+            )
 
         self.refresh_devices()
 
@@ -515,17 +595,18 @@ class MainWindow(QMainWindow):
         if self.timer.isActive():
             self.timer.stop()
             self.start_button.setText("Start")
-            self.status_label.setText("Paused.")
+            self.start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         else:
             self.timer.start()
             self.start_button.setText("Pause")
-            self.status_label.setText("Streaming telemetry...")
+            self.start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
 
     def reset_chart(self) -> None:
         self.telemetry_chart.reset()
-        self.status_label.setText("Chart reset.")
-        self.telemetry_label.setText("Throttle 0% | Brake 0% | Steering 0 deg")
         self._update_bars(TelemetrySample(throttle=0.0, brake=0.0, steering=0.0))
+        self._throttle_target_hit = False
+        self._brake_target_hit = False
+        self._update_status()
 
     def _on_tick(self) -> None:
         sample = self._read_inputs()
@@ -536,7 +617,8 @@ class MainWindow(QMainWindow):
             brake_target=float(self.brake_target.value()),
         )
         self._update_bars(sample)
-        self._update_status(sample)
+        self._maybe_play_target_sound(sample)
+        self._update_status()
 
     def _on_grid_step_changed(self) -> None:
         step = int(self.grid_step_combo.currentData() or 10)
@@ -551,17 +633,117 @@ class MainWindow(QMainWindow):
             throttle_target=int(self.throttle_target.value()),
             brake_target=int(self.brake_target.value()),
             grid_step_percent=int(self.grid_step_combo.currentData() or 10),
+            throttle_sound_enabled=self._sound_enabled("throttle"),
+            throttle_sound_path=self._resolve_sound_path_text("throttle"),
+            brake_sound_enabled=self._sound_enabled("brake"),
+            brake_sound_path=self._resolve_sound_path_text("brake"),
         )
         save_ui_config(cfg)
 
-    def _update_status(self, sample: TelemetrySample) -> None:
+    def _update_status(self) -> None:
         parts: list[str] = []
         if self.pedals_session.is_open:
             parts.append(f"Pedals: {self.pedals_device_combo.currentText()}")
         if self.wheel_session.is_open:
             parts.append(f"Wheel: {self.wheel_device_combo.currentText()}")
-        source = " | ".join(parts) if parts else "Simulator"
-        self.telemetry_label.setText(f"[{source}]")
+        message = " | ".join(parts) if parts else "Simulator mode (no devices streaming)"
+        self.status_bar.showMessage(message)
+
+    def _maybe_play_target_sound(self, sample: TelemetrySample) -> None:
+        throttle_target = float(self.throttle_target.value())
+        brake_target = float(self.brake_target.value())
+        self._update_target_flag(sample.throttle, throttle_target, "_throttle_target_hit", "throttle")
+        self._update_target_flag(sample.brake, brake_target, "_brake_target_hit", "brake")
+
+    def _update_target_flag(self, value: float, target: float, flag_attr: str, kind: str) -> None:
+        reset_threshold = max(0.0, target - 5.0)
+        already_hit = getattr(self, flag_attr)
+        if not self._sound_enabled(kind):
+            setattr(self, flag_attr, False)
+            return
+        if value >= target and not already_hit:
+            self._play_target_sound(kind)
+            setattr(self, flag_attr, True)
+        elif value < reset_threshold:
+            setattr(self, flag_attr, False)
+
+    def _play_target_sound(self, kind: str) -> None:
+        path = Path(self._resolve_sound_path_text(kind))
+        if not path.exists() or path.suffix.lower() not in {".mp3", ".wav", ".ogg"}:
+            return
+        try:
+            self._media_player.stop()
+            self._media_player.setSource(QUrl.fromLocalFile(str(path)))
+            self._audio_output.setVolume(1.0)
+            self._media_player.play()
+        except Exception:
+            # Avoid spamming the status label; fail silently.
+            pass
+
+    def _browse_sound_file(self, kind: str) -> None:
+        start_dir = Path(self._resolve_sound_path_text(kind)).expanduser().parent
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Select {kind} target sound",
+            str(start_dir),
+            "Audio Files (*.mp3 *.wav *.ogg);;All Files (*.*)",
+        )
+        if file_path:
+            self._set_sound_file(kind, file_path, trigger_save=True)
+
+    def _set_sound_file(self, kind: str, path: Path | str, *, trigger_save: bool) -> None:
+        path = Path(path).expanduser()
+        line_edit = self._sound_files[kind]
+        line_edit.blockSignals(True)
+        line_edit.setText(str(path))
+        line_edit.blockSignals(False)
+        if trigger_save:
+            self._schedule_save_ui_settings()
+
+    def _resolve_sound_path_text(self, kind: str) -> str:
+        line_edit = self._sound_files[kind]
+        return line_edit.text().strip() or str(self._default_sound_path)
+
+    def _sound_enabled(self, kind: str) -> bool:
+        checkbox = self._sound_checkboxes[kind]
+        return checkbox.isChecked()
+
+    def _apply_sound_settings(
+        self,
+        *,
+        throttle_enabled: bool,
+        throttle_path: str | None,
+        brake_enabled: bool,
+        brake_path: str | None,
+    ) -> None:
+        self._sound_checkboxes["throttle"].setChecked(throttle_enabled)
+        self._sound_checkboxes["brake"].setChecked(brake_enabled)
+        self._set_sound_file("throttle", throttle_path or self._default_sound_path, trigger_save=False)
+        self._set_sound_file("brake", brake_path or self._default_sound_path, trigger_save=False)
+
+    def _build_sound_row(self, *, kind: str, label: str) -> QWidget:
+        checkbox = QCheckBox(f"Play {label.lower()}")
+        checkbox.setChecked(True)
+        checkbox.stateChanged.connect(self._schedule_save_ui_settings)
+        self._sound_checkboxes[kind] = checkbox
+
+        line_edit = QLineEdit()
+        line_edit.setPlaceholderText(f"Select {label.lower()} (mp3 / ogg / wav)")
+        line_edit.setReadOnly(True)
+        line_edit.textChanged.connect(self._schedule_save_ui_settings)
+        self._sound_files[kind] = line_edit
+
+        browse_btn = QPushButton("Browse…")
+        browse_btn.clicked.connect(lambda: self._browse_sound_file(kind))
+
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(line_edit, stretch=1)
+        layout.addWidget(browse_btn)
+        layout.addWidget(checkbox)
+        return row
 
     def _update_bars(self, sample: TelemetrySample) -> None:
         throttle_val = int(max(0.0, min(100.0, sample.throttle)))

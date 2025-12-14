@@ -39,7 +39,6 @@ class TelemetryChart:
         self.axis_x = QValueAxis()
         self.axis_x.setRange(0, self.max_points)
         self.axis_x.setLabelFormat("%d")
-        self.axis_x.setTitleText("Samples")
 
         self.axis_y = QValueAxis()
         self.axis_y.setRange(0, 100)

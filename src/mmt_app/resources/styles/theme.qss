@@ -9,6 +9,22 @@ QLabel#statusLabel {
     padding: 8px 4px;
 }
 
+QGroupBox {
+    border: 1px solid #1f2937;
+    border-radius: 8px;
+    margin-top: 12px;
+    padding: 12px 12px 10px 12px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 6px;
+    color: #38bdf8;
+    font-weight: 700;
+    background: #0f172a;
+}
+
 QPushButton {
     background: #22c55e;
     color: #0b1020;
@@ -24,6 +40,22 @@ QPushButton:hover {
 
 QPushButton:pressed {
     background: #15803d;
+}
+
+QLineEdit {
+    background: #111827;
+    color: #e5e7eb;
+    border: 1px solid #1f2937;
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+QLineEdit:focus {
+    border-color: #38bdf8;
+}
+
+QCheckBox {
+    font-weight: 600;
 }
 
 QProgressBar#throttleBar,
