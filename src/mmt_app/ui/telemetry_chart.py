@@ -132,3 +132,15 @@ class TelemetryChart:
     def _steering_to_percent(steering: float) -> float:
         """Map steering -100..100 to 0..100, where 50 represents 0."""
         return max(0.0, min(100.0, (steering + 100.0) / 2.0))
+
+    def set_steering_visible(self, visible: bool) -> None:
+        """Toggle visibility of steering trace and zero line."""
+        self.series_steering.setVisible(visible)
+        self.series_steering_zero.setVisible(visible)
+        try:
+            for series in (self.series_steering, self.series_steering_zero):
+                markers = self.chart.legend().markers(series)
+                if markers:
+                    markers[0].setVisible(visible and series is self.series_steering)
+        except Exception:
+            pass

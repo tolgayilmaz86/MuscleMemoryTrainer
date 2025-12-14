@@ -36,7 +36,7 @@ A minimal PySide6 desktop starter that you can run directly or package as a stan
 - Output appears under `dist/MuscleMemoryTrainer/`. Test on a clean machine to confirm Qt plugins and resources are present.
 - Input note: controller detection currently uses `hidapi` (raw HID), so you may need to set report byte offsets per device in the app.
 - Customize:
-  - Add an icon via `icon="path/to/app.ico"` inside `EXE(...)`.
+  - Icon: `mmt_app.spec` already points to `src/mmt_app/resources/appicon.ico`; replace that file (or update the path) to change the Explorer/taskbar icon.
   - Switch to one-file by setting `onefile=True` in `EXE(...)` (trade-off: slower startup due to extraction).
 
 ## Development tips

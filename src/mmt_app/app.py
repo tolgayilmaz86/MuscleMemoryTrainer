@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 APP_NAME = "Muscle Memory Trainer"
@@ -35,6 +36,15 @@ def load_stylesheet(app: QApplication) -> None:
     app.setStyleSheet(theme_file.read_text(encoding="utf-8"))
 
 
+def load_app_icon() -> QIcon | None:
+    """Return the app icon from bundled resources (if present)."""
+    for candidate in ("appicon.ico", "appicon.png", "appicon64.png"):
+        icon_path = resource_path(candidate)
+        if icon_path.exists():
+            return QIcon(str(icon_path))
+    return None
+
+
 def ensure_std_streams() -> None:
     """
     Ensure stdout/stderr are usable (PyInstaller windowed apps can set them to None).
@@ -51,6 +61,8 @@ def create_application() -> QApplication:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    if icon := load_app_icon():
+        app.setWindowIcon(icon)
     ensure_user_config_dir()
     load_stylesheet(app)
     return app
@@ -60,4 +72,7 @@ def create_main_window() -> MainWindow:
     ensure_std_streams()
     from .ui.main_window import MainWindow  # Local import avoids circular/reference timing issues.
 
-    return MainWindow(app_name=APP_NAME, version=APP_VERSION)
+    window = MainWindow(app_name=APP_NAME, version=APP_VERSION)
+    if icon := load_app_icon():
+        window.setWindowIcon(icon)
+    return window

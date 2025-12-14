@@ -44,6 +44,8 @@ class UiConfig:
     throttle_target: int
     brake_target: int
     grid_step_percent: int
+    update_hz: int = 20
+    show_steering: bool = True
     throttle_sound_enabled: bool = True
     throttle_sound_path: str | None = None
     brake_sound_enabled: bool = True
@@ -197,6 +199,8 @@ def load_ui_config() -> Optional[UiConfig]:
             throttle_target=int(section.get("throttle_target", "60")),
             brake_target=int(section.get("brake_target", "40")),
             grid_step_percent=int(section.get("grid_step_percent", "10")),
+            update_hz=int(section.get("update_hz", "20")),
+            show_steering=section.getboolean("show_steering", fallback=True),
             throttle_sound_enabled=section.getboolean("throttle_sound_enabled", fallback=True),
             throttle_sound_path=section.get("throttle_sound_path", fallback="").strip() or None,
             brake_sound_enabled=section.getboolean("brake_sound_enabled", fallback=True),
@@ -213,6 +217,8 @@ def save_ui_config(cfg: UiConfig) -> None:
         "throttle_target": str(int(cfg.throttle_target)),
         "brake_target": str(int(cfg.brake_target)),
         "grid_step_percent": str(int(cfg.grid_step_percent)),
+        "update_hz": str(int(cfg.update_hz)),
+        "show_steering": "true" if bool(cfg.show_steering) else "false",
         "throttle_sound_enabled": "true" if bool(cfg.throttle_sound_enabled) else "false",
         "throttle_sound_path": cfg.throttle_sound_path or "",
         "brake_sound_enabled": "true" if bool(cfg.brake_sound_enabled) else "false",
