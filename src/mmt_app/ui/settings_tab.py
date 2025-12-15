@@ -62,7 +62,8 @@ from mmt_app.input.device_mgr import (
     DEFAULT_STEERING_CENTER,
     DEFAULT_STEERING_RANGE,
 )
-from mmt_app.ui.utils import clamp_int, resource_path
+from mmt_app.embedded_sound import get_embedded_sound_path
+from mmt_app.ui.utils import clamp_int
 
 if TYPE_CHECKING:
     from mmt_app.telemetry import TelemetrySample
@@ -259,7 +260,7 @@ class SettingsTab(QWidget):
 
     def _init_sound_state(self) -> None:
         """Initialize sound playback state variables."""
-        self._default_sound_path = resource_path("assets/target_hit.mp3")
+        self._default_sound_path = get_embedded_sound_path()
         self._sound_checkboxes: dict[str, QCheckBox] = {}
         self._sound_files: dict[str, QLineEdit] = {}
 
@@ -1428,6 +1429,11 @@ class SettingsTab(QWidget):
     def play_target_sound(self, kind: str) -> None:
         """Play the selected sound for the given target if the file looks valid."""
         path = Path(self.resolve_sound_path(kind))
+        
+        # Fall back to embedded default sound if user file not found
+        if not path.exists():
+            path = self._default_sound_path
+        
         if not path.exists() or path.suffix.lower() not in {".mp3", ".wav", ".ogg"}:
             return
 
