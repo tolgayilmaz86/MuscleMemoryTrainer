@@ -10,7 +10,7 @@ import math
 import sys
 from pathlib import Path
 from random import random
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from PySide6.QtCore import QTimer, Qt, QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
@@ -116,6 +116,8 @@ class MainWindow(QMainWindow):
         self._steering_cal_label: QLabel | None = None
         self._steering_cal_start_btn: QPushButton | None = None
         self._steering_pending_stage: str | None = None
+        self._pending_pedal_wizard: list[str] = []
+        self._calibration_done_handler: Optional[Callable[[str, int, float], None]] = None
         self.update_rate_row = self._create_update_rate_row()
 
         telemetry_tab = self._build_telemetry_tab()
@@ -337,6 +339,8 @@ class MainWindow(QMainWindow):
         cal_throttle_btn.clicked.connect(lambda: self.start_calibration("pedals", "throttle"))
         cal_brake_btn = QPushButton("Calibrate Brake (press)")
         cal_brake_btn.clicked.connect(lambda: self.start_calibration("pedals", "brake"))
+        auto_pedals_btn = QPushButton("Auto-detect Pedal Offsets")
+        auto_pedals_btn.clicked.connect(self._start_pedal_offset_wizard)
         cal_steer_btn = QPushButton("Calibrate Steering (turn)")
         cal_steer_btn.clicked.connect(lambda: self.start_calibration("wheel", "steering"))
         cal_steer_range_btn = QPushButton("Calibrate Steering Range")
@@ -363,6 +367,7 @@ class MainWindow(QMainWindow):
         buttons.addStretch()
 
         cal_buttons = QHBoxLayout()
+        cal_buttons.addWidget(auto_pedals_btn)
         cal_buttons.addWidget(cal_throttle_btn)
         cal_buttons.addWidget(cal_brake_btn)
         cal_buttons.addWidget(cal_steer_btn)
@@ -654,7 +659,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "grid_step_value"):
             self.grid_step_value.setText(f"{int(step_percent)}%")
 
-    def start_calibration(self, device_kind: str, axis: str) -> None:
+    def start_calibration(
+        self, device_kind: str, axis: str, *, on_complete: Optional[Callable[[str, int, float], None]] = None
+    ) -> None:
         """Start an interactive calibration for a single axis on one device."""
         if device_kind not in ("pedals", "wheel"):
             return
@@ -668,6 +675,7 @@ class MainWindow(QMainWindow):
             return
         self.calibration_device = device_kind
         self.calibration_axis = axis
+        self._calibration_done_handler = on_complete
         self._baseline_samples = []
         self._active_samples = []
 
@@ -699,11 +707,15 @@ class MainWindow(QMainWindow):
             return
         if not self._baseline_samples or not self._active_samples:
             self.device_status.setText("Calibration failed: not enough data. Try again.")
+            self._calibration_done_handler = None
+            self._pending_pedal_wizard = []
             return
 
         result = detect_changing_byte(self._baseline_samples, self._active_samples)
         if result is None:
             self.device_status.setText("Calibration failed: couldn't detect changing byte. Try again.")
+            self._calibration_done_handler = None
+            self._pending_pedal_wizard = []
             return
 
         if axis == "throttle":
@@ -713,9 +725,14 @@ class MainWindow(QMainWindow):
         else:
             self.steering_offset.setValue(result.offset)
 
-        self.device_status.setText(
-            f"Calibration complete: {axis} offset = {result.offset} (score {result.score:.1f}). Save to persist."
-        )
+        if self._calibration_done_handler:
+            handler = self._calibration_done_handler
+            self._calibration_done_handler = None
+            handler(axis, result.offset, result.score)
+        else:
+            self.device_status.setText(
+                f"Calibration complete: {axis} offset = {result.offset} (score {result.score:.1f}). Save to persist."
+            )
 
     def _capture_calibration_sample(self) -> None:
         """Read and buffer a single HID report during calibration."""
@@ -727,6 +744,36 @@ class MainWindow(QMainWindow):
         if report is None:
             return
         self._active_samples.append(report)
+
+    def _start_pedal_offset_wizard(self) -> None:
+        """Run a two-step wizard to auto-detect throttle/brake offsets."""
+        if not self.pedals_session.is_open:
+            self.device_status.setText("Select a pedals HID device first.")
+            return
+        if self.calibration_device or self.calibration_axis:
+            self.device_status.setText("Calibration already running. Please wait.")
+            return
+        self._pending_pedal_wizard = ["throttle", "brake"]
+        self.device_status.setText("Auto-detecting pedal offsets: keep pedals released...")
+        self._run_next_pedal_wizard_step()
+
+    def _run_next_pedal_wizard_step(self) -> None:
+        if not self._pending_pedal_wizard:
+            self.device_status.setText("Pedal offsets detected. Click Save to persist.")
+            try:
+                self.save_current_mapping()
+            except Exception:
+                pass
+            return
+        axis = self._pending_pedal_wizard.pop(0)
+        self.device_status.setText(
+            f"Calibrating {axis}: keep the other pedal released. Press and hold when prompted."
+        )
+        self.start_calibration("pedals", axis, on_complete=self._on_pedal_wizard_step_complete)
+
+    def _on_pedal_wizard_step_complete(self, axis: str, offset: int, score: float) -> None:
+        self.device_status.setText(f"{axis.capitalize()} offset detected at byte {offset} (score {score:.1f}).")
+        QTimer.singleShot(300, self._run_next_pedal_wizard_step)
 
     def calibrate_steering_range(self) -> None:
         """Calibrate steering center/range (for different wheel rotation angles)."""
