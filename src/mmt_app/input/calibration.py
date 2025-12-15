@@ -19,10 +19,10 @@ if TYPE_CHECKING:
 # Constants
 # ---------------------------------------------------------------------------
 
-CALIBRATION_DURATION_MS: int = 5000
+CALIBRATION_DURATION_MS: int = 2000
 """Duration (ms) for each calibration sample capture phase."""
 
-STEERING_CAPTURE_MS: int = 5000
+STEERING_CAPTURE_MS: int = 2000
 """Duration (ms) for each steering calibration stage."""
 
 MAX_READS_PER_TICK: int = 50

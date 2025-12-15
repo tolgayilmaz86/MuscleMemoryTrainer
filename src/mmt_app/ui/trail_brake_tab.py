@@ -25,9 +25,7 @@ from PySide6.QtWidgets import (
 from ..config import (
     TrailBrakeConfig,
     load_trail_brake_config,
-    load_trail_brake_traces,
     save_trail_brake_config,
-    save_trail_brake_trace,
 )
 from ..trail_brake import BrakeTrace, presets as preset_traces, random_trace
 from .utils import AXIS_MAX, clamp, clamp_int
@@ -139,7 +137,7 @@ class TrailBrakeTab(QWidget):
     def _init_state(self) -> None:
         """Initialize internal state and load persisted configuration."""
         self._presets = preset_traces()
-        self._custom = load_trail_brake_traces()
+        self._custom: dict[str, list[int]] = {}
         self._generated_trace: Optional[BrakeTrace] = None
         self._loop_active = False
 
@@ -458,19 +456,23 @@ class TrailBrakeTab(QWidget):
                 break
 
     def save_trace_as(self) -> None:
-        """Save the current user trace as a custom trace."""
-        name, ok = QInputDialog.getText(self, "Save brake trace", "Trace name:")
-        if not ok:
+        """Save the currently displayed target trace to a JSON file."""
+        trace = self._state.trace
+        default_name = f"{trace.name}.json"
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Save brake trace", default_name, "JSON (*.json)"
+        )
+        if not path_str:
             return
-        name = (name or "").strip()
-        if not name:
-            self._status_label.setText("Save canceled: empty name.")
-            return
+        path = Path(path_str)
         try:
-            save_trail_brake_trace(name, self._state.user_points)
-            self._custom = load_trail_brake_traces()
-            self._populate_traces()
-            self._status_label.setText(f"Saved trace '{name}'.")
+            # Save the displayed target trace to JSON file
+            payload = {
+                "name": trace.name,
+                "points": list(trace.points),
+            }
+            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            self._status_label.setText(f"Saved trace to {path.name}.")
         except Exception as exc:
             self._status_label.setText(f"Save failed: {exc}")
 
@@ -488,8 +490,8 @@ class TrailBrakeTab(QWidget):
             points = raw["points"]
             if not isinstance(points, list):
                 raise ValueError("points must be a list")
-            save_trail_brake_trace(name, [int(x) for x in points])
-            self._custom = load_trail_brake_traces()
+            normalized = [max(0, min(100, int(x))) for x in points]
+            self._custom[name] = normalized
             self._populate_traces()
             self._status_label.setText(f"Imported trace '{name}'.")
         except Exception as exc:

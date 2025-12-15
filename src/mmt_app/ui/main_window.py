@@ -32,8 +32,8 @@ from .utils import (
 
 
 # Steering smoothing constants
-_STEERING_SMOOTHING_ALPHA = 0.08
-_STEERING_DEADBAND_DEGREES = 1.5
+_STEERING_SMOOTHING_ALPHA = 0.15
+_STEERING_DEADBAND_PERCENT = 3.0
 
 # UI defaults
 _DEFAULT_UPDATE_RATE_HZ = 20
@@ -84,7 +84,7 @@ class MainWindow(QMainWindow):
         self._show_steering = False
         self._show_watermark = True
         self._steering_alpha = _STEERING_SMOOTHING_ALPHA
-        self._steering_deadband = _STEERING_DEADBAND_DEGREES
+        self._steering_deadband = _STEERING_DEADBAND_PERCENT
 
     def _init_sound_state(self) -> None:
         """Initialize sound target tracking state."""
@@ -373,9 +373,18 @@ class MainWindow(QMainWindow):
                     )
                     if latest:
                         s_off = self._settings_tab.steering_offset
-                        if s_off < len(latest):
-                            steering_raw = self._apply_steering(latest[s_off])
-                            steering = self._smooth_steering(steering_raw, self._last_sample.steering)
+                        is_16bit = self._settings_tab.steering_16bit
+                        if is_16bit:
+                            # 16-bit little-endian steering (2 bytes)
+                            if s_off + 1 < len(latest):
+                                raw_steering = latest[s_off] | (latest[s_off + 1] << 8)
+                                steering_raw = self._apply_steering_16bit(raw_steering)
+                                steering = self._smooth_steering(steering_raw, self._last_sample.steering)
+                        else:
+                            # 8-bit steering (1 byte)
+                            if s_off < len(latest):
+                                steering_raw = self._apply_steering(latest[s_off])
+                                steering = self._smooth_steering(steering_raw, self._last_sample.steering)
 
                 self._last_sample = TelemetrySample(throttle, brake, steering)
                 return self._last_sample
@@ -396,9 +405,36 @@ class MainWindow(QMainWindow):
         return self._last_sample
 
     def _apply_steering(self, raw_value: int) -> float:
-        """Convert raw steering byte to -100..100 using calibrated center/range."""
+        """Convert raw steering byte to -100..100 using calibrated center and range.
+        
+        The raw value is typically 0-255 from an 8-bit HID report.
+        We map it such that:
+        - center value = 0% steering
+        - values below center = negative (left)
+        - values above center = positive (right)
+        """
         center = float(self._settings_tab.steering_center or 128)
-        span = float(max(1, self._settings_tab.steering_range or 127))
+        # Use calibrated half-range, or default to 127 for 8-bit
+        half_range = float(self._settings_tab.steering_half_range)
+        if half_range > 255:
+            # If half_range is from 16-bit calibration, scale down for 8-bit
+            half_range = 127.0
+        span = max(half_range, 1.0)  # Avoid division by zero
+        normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)
+        return normalized * 100.0
+
+    def _apply_steering_16bit(self, raw_value: int) -> float:
+        """Convert raw 16-bit steering value to -100..100 using calibrated center and range.
+        
+        The raw value is 0-65535 from a 16-bit HID report (little-endian).
+        We map it such that:
+        - center value = 0% steering
+        - values below center = negative (left)
+        - values above center = positive (right)
+        """
+        center = float(self._settings_tab.steering_center or 32768)
+        # Use calibrated half-range from steering calibration
+        span = max(float(self._settings_tab.steering_half_range), 1.0)  # Avoid division by zero
         normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)
         return normalized * 100.0
 

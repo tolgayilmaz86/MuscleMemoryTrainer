@@ -45,6 +45,8 @@ from mmt_app.config import (
     DEFAULT_STEERING_OFFSET,
     DEFAULT_STEERING_CENTER,
     DEFAULT_STEERING_RANGE,
+    DEFAULT_STEERING_HALF_RANGE,
+    DEFAULT_STEERING_16BIT,
     DEFAULT_THROTTLE_TARGET,
     DEFAULT_BRAKE_TARGET,
     DEFAULT_GRID_STEP_PERCENT,
@@ -188,14 +190,24 @@ class SettingsTab(QWidget):
         return self._steering_offset.value()
 
     @property
+    def steering_16bit(self) -> bool:
+        """Return whether 16-bit steering mode is enabled."""
+        return self._steering_16bit.isChecked()
+
+    @property
     def steering_center(self) -> int:
         """Return the calibrated steering center value."""
         return self._steering_center
 
     @property
     def steering_range(self) -> int:
-        """Return the calibrated steering range value."""
+        """Return the calibrated steering range value (wheel rotation degrees)."""
         return self._steering_range
+
+    @property
+    def steering_half_range(self) -> int:
+        """Return the calibrated steering half-range (raw value from center to full lock)."""
+        return self._steering_half_range
 
     @property
     def update_rate(self) -> int:
@@ -248,6 +260,9 @@ class SettingsTab(QWidget):
 
     def _init_steering_state(self) -> None:
         """Initialize steering calibration state variables."""
+        self._steering_center: int = DEFAULT_STEERING_CENTER
+        self._steering_range: int = DEFAULT_STEERING_RANGE
+        self._steering_half_range: int = DEFAULT_STEERING_HALF_RANGE
         self._steering_state = SteeringCalibrationState(
             center=DEFAULT_STEERING_CENTER,
             range_degrees=DEFAULT_STEERING_RANGE,
@@ -369,13 +384,13 @@ class SettingsTab(QWidget):
         setup_wizard_btn.clicked.connect(self._start_input_setup_wizard)
         setup_wizard_btn.setMinimumHeight(32)
 
-        set_center_btn = QPushButton("🎯 Set Steering Center")
-        set_center_btn.setToolTip("Hold wheel centered and click to capture center position")
-        set_center_btn.clicked.connect(self._set_steering_center_from_wheel)
-        set_center_btn.setMinimumHeight(32)
+        calibrate_steering_btn = QPushButton("🔄 Calibrate Steering")
+        calibrate_steering_btn.setToolTip("Full calibration: turn wheel fully left, then right to find center")
+        calibrate_steering_btn.clicked.connect(self.calibrate_steering_range)
+        calibrate_steering_btn.setMinimumHeight(32)
 
         wizard_layout.addWidget(setup_wizard_btn)
-        wizard_layout.addWidget(set_center_btn)
+        wizard_layout.addWidget(calibrate_steering_btn)
         wizard_layout.addStretch()
         layout.addWidget(wizard_row)
 
@@ -449,6 +464,15 @@ class SettingsTab(QWidget):
         self._steering_offset.setRange(0, 63)
         self._steering_offset.setValue(DEFAULT_STEERING_OFFSET)
         advanced_form.addRow("Steering byte offset:", self._steering_offset)
+
+        # Steering 16-bit mode
+        self._steering_16bit = QCheckBox("16-bit steering (2 bytes, little-endian)")
+        self._steering_16bit.setChecked(DEFAULT_STEERING_16BIT)
+        self._steering_16bit.setToolTip(
+            "Enable if your wheel uses 16-bit steering values (most racing wheels do).\n"
+            "When enabled, reads 2 bytes starting at the steering offset."
+        )
+        advanced_form.addRow("", self._steering_16bit)
 
         self._advanced_widget.setVisible(False)
         layout.addWidget(self._advanced_widget)
@@ -720,6 +744,8 @@ class SettingsTab(QWidget):
                 steering_offset=self._steering_offset.value(),
                 steering_center=self._steering_center,
                 steering_range=self._steering_range,
+                steering_half_range=self._steering_half_range,
+                steering_16bit=self._steering_16bit.isChecked(),
             )
         
         save_input_profile(InputProfile(pedals=pedals_cfg, wheel=wheel_cfg, ui=None))
@@ -754,7 +780,9 @@ class SettingsTab(QWidget):
         if wheel_cfg:
             self._wheel_report_len.setValue(wheel_cfg.report_len)
             self._steering_offset.setValue(wheel_cfg.steering_offset)
+            self._steering_16bit.setChecked(wheel_cfg.steering_16bit)
             self._steering_center = wheel_cfg.steering_center
+            self._steering_half_range = wheel_cfg.steering_half_range
             # Clamp steering range to slider bounds (180-1080 degrees)
             clamped_range = max(180, min(1080, wheel_cfg.steering_range))
             self._steering_range = clamped_range
@@ -813,7 +841,7 @@ class SettingsTab(QWidget):
         self._baseline_samples = []
         self._active_samples = []
 
-        self._set_status(f"Calibrating {axis}: release all pedals/wheel for 2 seconds...")
+        self._set_status(f"Calibrating {axis}: keep input RELEASED for 2 seconds...")
         self._calibration_timer.start()
         QTimer.singleShot(CALIBRATION_DURATION_MS, self._switch_to_active_capture)
 
@@ -821,7 +849,7 @@ class SettingsTab(QWidget):
         """Transition from baseline capture to active capture."""
         self._calibration_phase = "active"
         self._set_status(
-            f"Now press/move the {self._calibration_axis} input for 2 seconds..."
+            f"Now PRESS/MOVE the {self._calibration_axis} for 2 seconds..."
         )
         QTimer.singleShot(CALIBRATION_DURATION_MS, self._finish_calibration)
 
@@ -1185,10 +1213,17 @@ class SettingsTab(QWidget):
             return
 
         s_off = self._steering_offset.value()
-        if s_off >= len(report):
-            return
-
-        center = int(report[s_off])
+        is_16bit = self._steering_16bit.isChecked()
+        
+        if is_16bit:
+            if s_off + 1 >= len(report):
+                return
+            center = report[s_off] | (report[s_off + 1] << 8)
+        else:
+            if s_off >= len(report):
+                return
+            center = int(report[s_off])
+        
         self._steering_center = center
 
     def _finish_setup_wizard(self) -> None:
@@ -1220,25 +1255,37 @@ class SettingsTab(QWidget):
     # -------------------------------------------------------------------------
 
     def calibrate_steering_range(self) -> None:
-        """Calibrate steering center/range (for different wheel rotation angles)."""
+        """Calibrate steering center by capturing full left and right positions."""
         if not self._wheel_session.is_open:
-            self._set_status("Select a wheel HID device first.")
+            self._set_status("Wheel not connected. Click Connect first.")
             return
         if self._steering_offset.value() >= self._wheel_report_len.value():
-            self._set_status("Adjust steering offset/length first.")
+            self._set_status("Invalid steering offset. Check advanced settings.")
             return
 
-        self._steering_center_samples = []
         self._steering_left_samples = []
         self._steering_right_samples = []
-        self._steering_pending_stage = "center"
+        self._steering_pending_stage = "left"
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Steering Calibration")
-        label = QLabel("Step 1 of 3: Leave wheel centered.\nClick Start when ready.")
+        dlg.setMinimumWidth(350)
+        dlg.setMinimumHeight(150)
+        dlg.setModal(True)
+        
+        label = QLabel(
+            "Step 1 of 2: Turn wheel fully LEFT and hold.\n\n"
+            "Click Start when ready."
+        )
         label.setWordWrap(True)
+        label.setAlignment(Qt.AlignCenter)
+        label.setMinimumHeight(80)
+        label.setStyleSheet("font-size: 13px; padding: 10px;")
+        
         start_btn = QPushButton("Start")
+        start_btn.setMinimumWidth(80)
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setMinimumWidth(80)
         start_btn.clicked.connect(self._start_pending_steering_stage)
         cancel_btn.clicked.connect(lambda: self._cancel_steering_calibration(dialog=dlg))
 
@@ -1246,9 +1293,13 @@ class SettingsTab(QWidget):
         btns.addStretch()
         btns.addWidget(start_btn)
         btns.addWidget(cancel_btn)
+        btns.addStretch()
 
         layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
         layout.addWidget(label)
+        layout.addStretch()
         layout.addLayout(btns)
         dlg.setLayout(layout)
 
@@ -1256,23 +1307,21 @@ class SettingsTab(QWidget):
         self._steering_cal_label = label
         self._steering_cal_start_btn = start_btn
         self._steering_cal_dialog.show()
+        self._set_status("Steering calibration started...")
 
     def _start_pending_steering_stage(self) -> None:
-        """Begin capture for the current pending stage (center/left/right)."""
+        """Begin capture for the current pending stage (left/right)."""
         stage = self._steering_pending_stage
         if not stage:
             return
 
         self._steering_cal_stage = stage
         stage_texts = {
-            "center": "Capturing center... keep wheel still for 3s.",
-            "left": "Capturing full left... hold for 3s.",
-            "right": "Capturing full right... hold for 3s.",
+            "left": "Capturing full LEFT position...\n\nHold steady for 3 seconds.",
+            "right": "Capturing full RIGHT position...\n\nHold steady for 3 seconds.",
         }
 
-        if stage == "center":
-            self._steering_center_samples = []
-        elif stage == "left":
+        if stage == "left":
             self._steering_left_samples = []
         else:
             self._steering_right_samples = []
@@ -1295,24 +1344,19 @@ class SettingsTab(QWidget):
         stage = self._steering_cal_stage
         self._steering_cal_stage = None
 
-        if stage == "center":
-            self._steering_pending_stage = "left"
-            self._set_steering_dialog_text(
-                "Step 2 of 3: Turn wheel full left. Click Start when ready."
-            )
-        elif stage == "left":
+        if stage == "left":
             self._steering_pending_stage = "right"
             self._set_steering_dialog_text(
-                "Step 3 of 3: Turn wheel full right. Click Start when ready."
+                "Step 2 of 2: Turn wheel fully RIGHT and hold.\n\n"
+                "Click Start when ready."
             )
+            if self._steering_cal_start_btn:
+                self._steering_cal_start_btn.setEnabled(True)
         elif stage == "right":
             self._steering_pending_stage = None
             self._finish_steering_range_calibration()
             self._close_steering_cal_dialog()
             return
-
-        if self._steering_cal_start_btn:
-            self._steering_cal_start_btn.setEnabled(True)
 
     def _cancel_steering_calibration(self, dialog: QDialog | None = None) -> None:
         """Abort steering calibration and cleanup dialog/timers."""
@@ -1347,45 +1391,55 @@ class SettingsTab(QWidget):
             return
 
         s_off = self._steering_offset.value()
-        if s_off >= len(report):
-            return
-
-        value = int(report[s_off])
-        if self._steering_cal_stage == "center":
-            self._steering_center_samples.append(value)
-        elif self._steering_cal_stage == "left":
+        is_16bit = self._steering_16bit.isChecked()
+        
+        if is_16bit:
+            # 16-bit little-endian
+            if s_off + 1 >= len(report):
+                return
+            value = report[s_off] | (report[s_off + 1] << 8)
+        else:
+            # 8-bit
+            if s_off >= len(report):
+                return
+            value = int(report[s_off])
+        
+        if self._steering_cal_stage == "left":
             self._steering_left_samples.append(value)
         elif self._steering_cal_stage == "right":
             self._steering_right_samples.append(value)
 
     def _finish_steering_range_calibration(self) -> None:
-        """Complete steering range calibration and save results."""
+        """Complete steering calibration by computing center and half-range from left/right extremes."""
         self._steering_cal_timer.stop()
         self._steering_cal_stage = None
 
-        if not self._steering_center_samples or not (
-            self._steering_left_samples or self._steering_right_samples
-        ):
-            self._set_status("Steering calibration failed: not enough data.")
+        if not self._steering_left_samples or not self._steering_right_samples:
+            self._set_status("Calibration failed: not enough data captured.")
             return
 
-        center = int(
-            sum(self._steering_center_samples)
-            / max(1, len(self._steering_center_samples))
-        )
+        # Get average of left and right positions
+        left_avg = sum(self._steering_left_samples) / len(self._steering_left_samples)
+        right_avg = sum(self._steering_right_samples) / len(self._steering_right_samples)
+        
+        # Center is midpoint between left and right extremes
+        center = int((left_avg + right_avg) / 2)
+        
+        # Half-range is the distance from center to either extreme
+        # Use the average of both sides in case they're slightly asymmetric
+        half_range = int(abs(right_avg - left_avg) / 2)
+        # Ensure a minimum to avoid division by zero
+        half_range = max(half_range, 100)
 
         self._steering_center = center
+        self._steering_half_range = half_range
         self._update_steering_calibration_label()
 
         try:
             self.save_current_mapping()
-            self._set_status(
-                f"Steering calibrated: center={center}. Saved to config.ini."
-            )
+            self._set_status(f"Steering calibrated. Center: {center}, Half-range: {half_range}")
         except Exception:
-            self._set_status(
-                f"Steering calibrated: center={center}. Click Save to persist."
-            )
+            self._set_status(f"Calibration complete (center={center}, range={half_range}). Click Save to persist.")
 
     def _update_steering_calibration_label(self) -> None:
         """Refresh the steering center/range label in settings."""
@@ -1393,35 +1447,6 @@ class SettingsTab(QWidget):
             self._steering_center_label.setText(
                 f"Center: {int(self._steering_center)} | Rotation: {int(self._steering_range)}°"
             )
-
-    def _set_steering_center_from_wheel(self) -> None:
-        """Read current steering position from wheel and set as center."""
-        if not self._wheel_session.is_open:
-            self._set_status("Wheel not connected. Click Connect in Device Selection first.")
-            return
-
-        report = self._wheel_session.read_latest_report(
-            report_len=self._wheel_report_len.value(),
-            max_reads=MAX_READS_PER_TICK,
-        )
-        if not report:
-            self._set_status("Could not read from wheel. Try again.")
-            return
-
-        s_off = self._steering_offset.value()
-        if s_off >= len(report):
-            self._set_status("Steering offset out of range.")
-            return
-
-        center = int(report[s_off])
-        self._steering_center = center
-        self._update_steering_calibration_label()
-
-        try:
-            self.save_current_mapping()
-            self._set_status(f"Steering center set to {center}. Saved.")
-        except Exception:
-            self._set_status(f"Steering center set to {center}. Click Save to persist.")
 
     def _on_steering_range_changed(self, value: int) -> None:
         """Handle steering range slider changes (wheel rotation degrees)."""

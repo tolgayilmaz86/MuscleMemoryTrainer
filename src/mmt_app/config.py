@@ -28,6 +28,8 @@ class WheelConfig(DeviceConfig):
     steering_offset: int
     steering_center: int
     steering_range: int
+    steering_half_range: int  # Raw value half-range (center to full lock)
+    steering_16bit: bool = False
 
 
 @dataclass(frozen=True)
@@ -68,7 +70,7 @@ class TrailBrakeConfig:
 class ActiveBrakeConfig:
     """Persistence for Active Brake mode."""
 
-    grid_step_percent: int
+    speed: int  # Speed/update rate in Hz (30-120)
 
 
 # -------------------------------------------------------------------------
@@ -83,6 +85,8 @@ DEFAULT_BRAKE_OFFSET: int = 2
 DEFAULT_STEERING_OFFSET: int = 0
 DEFAULT_STEERING_CENTER: int = 128
 DEFAULT_STEERING_RANGE: int = 900
+DEFAULT_STEERING_HALF_RANGE: int = 32767  # Default for 16-bit (0-65535)
+DEFAULT_STEERING_16BIT: bool = True
 
 # UI defaults
 DEFAULT_THROTTLE_TARGET: int = 60
@@ -95,7 +99,7 @@ DEFAULT_WINDOW_WIDTH: int = 1080
 DEFAULT_WINDOW_HEIGHT: int = 600
 
 # Active Brake defaults
-DEFAULT_ACTIVE_BRAKE_GRID_STEP: int = 10
+DEFAULT_ACTIVE_BRAKE_SPEED: int = 60  # Update rate in Hz (30-120)
 
 
 def config_path() -> Path:
@@ -132,6 +136,8 @@ def ensure_config_exists() -> None:
         "steering_offset": str(DEFAULT_STEERING_OFFSET),
         "steering_center": str(DEFAULT_STEERING_CENTER),
         "steering_range": str(DEFAULT_STEERING_RANGE),
+        "steering_half_range": str(DEFAULT_STEERING_HALF_RANGE),
+        "steering_16bit": "true" if DEFAULT_STEERING_16BIT else "false",
     }
 
     # UI section
@@ -155,12 +161,9 @@ def ensure_config_exists() -> None:
         "selected_trace": "",
     }
 
-    # Trail Brake traces section (empty by default)
-    parser["trail_brake_traces"] = {}
-
     # Active Brake section
     parser["active_brake"] = {
-        "grid_step_percent": str(DEFAULT_ACTIVE_BRAKE_GRID_STEP),
+        "speed": str(DEFAULT_ACTIVE_BRAKE_SPEED),
     }
 
     with path.open("w", encoding="utf-8") as f:
@@ -182,6 +185,8 @@ def _load_device_section(parser: configparser.ConfigParser, section_name: str) -
             "steering_offset": section.get("steering_offset"),
             "steering_center": section.get("steering_center"),
             "steering_range": section.get("steering_range"),
+            "steering_half_range": section.get("steering_half_range"),
+            "steering_16bit": section.get("steering_16bit", "false").lower() == "true",
         }
     except Exception:
         return None
@@ -235,6 +240,8 @@ def load_wheel_config() -> Optional[WheelConfig]:
             steering_offset=int(data["steering_offset"]),
             steering_center=int(data["steering_center"] or 128),
             steering_range=int(data["steering_range"] or 900),
+            steering_half_range=int(data.get("steering_half_range") or DEFAULT_STEERING_HALF_RANGE),
+            steering_16bit=bool(data.get("steering_16bit", False)),
         )
     except Exception:
         return None
@@ -273,6 +280,8 @@ def save_wheel_config(cfg: WheelConfig) -> None:
         "steering_offset": str(cfg.steering_offset),
         "steering_center": str(int(cfg.steering_center)),
         "steering_range": str(int(cfg.steering_range)),
+        "steering_half_range": str(int(cfg.steering_half_range)),
+        "steering_16bit": "true" if cfg.steering_16bit else "false",
     }
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
@@ -362,60 +371,22 @@ def save_trail_brake_config(cfg: TrailBrakeConfig) -> None:
         parser.write(f)
 
 
-def load_trail_brake_traces() -> dict[str, list[int]]:
-    """Load user-defined trail brake traces from config.ini."""
-    path = config_path()
-    if not path.exists():
-        return {}
-    parser = configparser.ConfigParser()
-    parser.read(path, encoding="utf-8")
-    if "trail_brake_traces" not in parser:
-        return {}
-    section = parser["trail_brake_traces"]
-    traces: dict[str, list[int]] = {}
-    for name, raw in section.items():
-        try:
-            points = json.loads(raw)
-            if isinstance(points, list) and points and all(isinstance(p, int) for p in points):
-                traces[name] = [max(0, min(100, int(p))) for p in points]
-        except Exception:
-            continue
-    return traces
-
-
-def save_trail_brake_trace(name: str, points: list[int]) -> None:
-    """Save a user-defined trail brake trace to config.ini."""
-    safe_name = name.strip()
-    if not safe_name:
-        raise ValueError("Trace name must not be empty")
-    normalized = [max(0, min(100, int(p))) for p in points]
-
-    parser = configparser.ConfigParser()
-    parser.read(config_path(), encoding="utf-8")
-    if "trail_brake_traces" not in parser:
-        parser["trail_brake_traces"] = {}
-    parser["trail_brake_traces"][safe_name] = json.dumps(normalized, separators=(",", ":"))
-    path = config_path()
-    with path.open("w", encoding="utf-8") as f:
-        parser.write(f)
-
-
 def load_active_brake_config() -> ActiveBrakeConfig:
     path = config_path()
     parser = configparser.ConfigParser()
     parser.read(path, encoding="utf-8")
     section = parser["active_brake"] if "active_brake" in parser else {}
     try:
-        step = int(section.get("grid_step_percent", "10"))
+        speed = int(section.get("speed", "60"))
     except Exception:
-        step = 10
-    return ActiveBrakeConfig(grid_step_percent=max(5, min(50, step)))
+        speed = 60
+    return ActiveBrakeConfig(speed=max(30, min(120, speed)))
 
 
 def save_active_brake_config(cfg: ActiveBrakeConfig) -> None:
     parser = configparser.ConfigParser()
     parser.read(config_path(), encoding="utf-8")
-    parser["active_brake"] = {"grid_step_percent": str(int(cfg.grid_step_percent))}
+    parser["active_brake"] = {"speed": str(int(cfg.speed))}
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
         parser.write(f)

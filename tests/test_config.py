@@ -40,6 +40,7 @@ class TestInputProfile:
             steering_offset=9,
             steering_center=120,
             steering_range=80,
+            steering_half_range=16000,
         )
         ui = config.UiConfig(throttle_target=70, brake_target=30, grid_step_percent=15)
         profile = config.InputProfile(pedals=pedals, wheel=wheel, ui=ui)
@@ -81,6 +82,7 @@ class TestInputProfile:
             steering_offset=9,
             steering_center=120,
             steering_range=80,
+            steering_half_range=16000,
         )
         ui = config.UiConfig(throttle_target=50, brake_target=50, grid_step_percent=10)
         profile = config.InputProfile(pedals=None, wheel=wheel, ui=ui)
@@ -145,36 +147,6 @@ class TestMissingFile:
 class TestTrailBrakeConfig:
     """Tests for Trail Brake configuration persistence."""
 
-    def test_trail_brake_traces_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
-        """Saving and loading trail brake traces should preserve data."""
-        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        config.save_trail_brake_trace("my_trace", [0, 50, 100])
-        traces = config.load_trail_brake_traces()
-        assert traces["my_trace"] == [0, 50, 100]
-
-    def test_save_multiple_traces(self, tmp_path: Path, monkeypatch) -> None:
-        """Should be able to save multiple traces."""
-        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        config.save_trail_brake_trace("trace1", [0, 25, 50])
-        config.save_trail_brake_trace("trace2", [0, 75, 100])
-        traces = config.load_trail_brake_traces()
-        assert traces["trace1"] == [0, 25, 50]
-        assert traces["trace2"] == [0, 75, 100]
-
-    def test_overwrite_existing_trace(self, tmp_path: Path, monkeypatch) -> None:
-        """Saving trace with existing name should overwrite."""
-        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        config.save_trail_brake_trace("my_trace", [0, 50, 100])
-        config.save_trail_brake_trace("my_trace", [0, 25, 50])
-        traces = config.load_trail_brake_traces()
-        assert traces["my_trace"] == [0, 25, 50]
-
-    def test_load_traces_missing_returns_empty_dict(self, tmp_path: Path, monkeypatch) -> None:
-        """Loading traces from missing file should return empty dict."""
-        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        traces = config.load_trail_brake_traces()
-        assert traces == {}
-
     def test_trail_brake_config_selected_trace(self, tmp_path: Path, monkeypatch) -> None:
         """Should save and load selected trace preference."""
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
@@ -196,17 +168,18 @@ class TestActiveBrakeConfig:
     def test_active_brake_config_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
         """Saving and loading active brake config should preserve data."""
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        cfg = config.ActiveBrakeConfig(grid_step_percent=25)
+        cfg = config.ActiveBrakeConfig(speed=90)
         config.save_active_brake_config(cfg)
         loaded = config.load_active_brake_config()
-        assert loaded.grid_step_percent == 25
+        assert loaded.speed == 90
 
     def test_active_brake_config_default(self, tmp_path: Path, monkeypatch) -> None:
         """Loading missing active brake config should return default."""
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
         loaded = config.load_active_brake_config()
-        # Should return default config, not None
+        # Should return default config (speed=60), not None
         assert loaded is not None
+        assert loaded.speed == 60
 
 
 # ============================================================================
@@ -303,6 +276,7 @@ class TestDeviceConfig:
             steering_offset=9,
             steering_center=120,
             steering_range=80,
+            steering_half_range=16000,
         )
         with pytest.raises(AttributeError):
             wheel.steering_center = 128  # type: ignore

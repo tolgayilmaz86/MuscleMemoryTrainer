@@ -15,11 +15,18 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QHBoxLayout,
+    QSlider,
     QVBoxLayout,
     QWidget,
     QStyle,
 )
 
+from ..config import (
+    ActiveBrakeConfig,
+    load_active_brake_config,
+    save_active_brake_config,
+    DEFAULT_ACTIVE_BRAKE_SPEED,
+)
 from ..trail_brake import ease, smooth, jitter
 from .watermark_chart_view import WatermarkChartView
 from .utils import AXIS_MAX, AXIS_MIN, clamp
@@ -30,8 +37,8 @@ _DEFAULT_AXIS_X_MAX = 100.0
 _DEFAULT_SCROLL_SPEED = 1.5
 _DEFAULT_TIMER_INTERVAL = 40
 _DEFAULT_GRID_STEP = 10
-_MIN_UPDATE_RATE_HZ = 5
-_MAX_UPDATE_RATE_HZ = 120
+_MIN_SPEED_HZ = 30
+_MAX_SPEED_HZ = 120
 
 
 @dataclass
@@ -82,6 +89,27 @@ class ActiveBrakeTab(QWidget):
         self._reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         self._reset_btn.clicked.connect(self.reset)
 
+        # Speed slider (30-120 Hz)
+        self._speed_slider = QSlider(Qt.Horizontal)
+        self._speed_slider.setRange(_MIN_SPEED_HZ, _MAX_SPEED_HZ)
+        self._speed_slider.setSingleStep(10)
+        self._speed_slider.setPageStep(10)
+        self._speed_slider.setTickInterval(10)
+        self._speed_slider.setTickPosition(QSlider.TicksBelow)
+        self._speed_slider.valueChanged.connect(self._on_speed_changed)
+
+        self._speed_label = QLabel()
+        self._speed_label.setMinimumWidth(52)
+
+        # Load saved speed from config
+        try:
+            cfg = load_active_brake_config()
+            initial_speed = cfg.speed
+        except Exception:
+            initial_speed = DEFAULT_ACTIVE_BRAKE_SPEED
+        self._speed_slider.setValue(initial_speed)
+        self._update_speed_label(initial_speed)
+
         (
             self._chart,
             self._series_target,
@@ -99,8 +127,15 @@ class ActiveBrakeTab(QWidget):
         buttons.addWidget(self._reset_btn)
         buttons.addStretch()
 
+        # Speed control row
+        speed_row = QHBoxLayout()
+        speed_row.addWidget(QLabel("Speed:"))
+        speed_row.addWidget(self._speed_slider, stretch=1)
+        speed_row.addWidget(self._speed_label)
+
         layout = QVBoxLayout()
         layout.addLayout(buttons)
+        layout.addLayout(speed_row)
         layout.addWidget(self._chart_view, stretch=1)
         layout.addWidget(self._status_label)
         self.setLayout(layout)
@@ -371,6 +406,21 @@ class ActiveBrakeTab(QWidget):
 
     def set_update_rate(self, hz: int) -> None:
         """Adjust timer interval for how often the active brake chart ticks."""
-        hz = max(_MIN_UPDATE_RATE_HZ, min(_MAX_UPDATE_RATE_HZ, int(hz)))
+        hz = max(_MIN_SPEED_HZ, min(_MAX_SPEED_HZ, int(hz)))
         interval_ms = max(1, int(1000 / hz))
         self._timer.setInterval(interval_ms)
+
+    def _on_speed_changed(self, hz: int) -> None:
+        """Handle speed slider changes."""
+        hz = max(_MIN_SPEED_HZ, min(_MAX_SPEED_HZ, int(hz)))
+        self._update_speed_label(hz)
+        self.set_update_rate(hz)
+        # Save to config
+        try:
+            save_active_brake_config(ActiveBrakeConfig(speed=hz))
+        except Exception:
+            pass
+
+    def _update_speed_label(self, hz: int) -> None:
+        """Update the speed label text."""
+        self._speed_label.setText(f"{hz} Hz")
