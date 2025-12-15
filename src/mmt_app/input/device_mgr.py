@@ -10,35 +10,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from mmt_app.input.hid_backend import HidSession, HidDeviceInfo, enumerate_devices, hid_available
+from mmt_app.config import (
+    DEFAULT_PEDALS_REPORT_LEN,
+    DEFAULT_WHEEL_REPORT_LEN,
+    DEFAULT_THROTTLE_OFFSET,
+    DEFAULT_BRAKE_OFFSET,
+    DEFAULT_STEERING_OFFSET,
+    DEFAULT_STEERING_CENTER,
+    DEFAULT_STEERING_RANGE,
+)
 
 if TYPE_CHECKING:
     pass
-
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-DEFAULT_PEDALS_REPORT_LEN: int = 4
-"""Default expected byte length for pedal HID reports."""
-
-DEFAULT_WHEEL_REPORT_LEN: int = 8
-"""Default expected byte length for wheel HID reports."""
-
-DEFAULT_THROTTLE_OFFSET: int = 1
-"""Default byte offset for throttle axis in pedal reports."""
-
-DEFAULT_BRAKE_OFFSET: int = 2
-"""Default byte offset for brake axis in pedal reports."""
-
-DEFAULT_STEERING_OFFSET: int = 0
-"""Default byte offset for steering axis in wheel reports."""
-
-DEFAULT_STEERING_CENTER: int = 128
-"""Default center value for steering calibration (8-bit mid-point)."""
-
-DEFAULT_STEERING_RANGE: int = 900
-"""Default wheel rotation in degrees (180-1080)."""
 
 
 # ---------------------------------------------------------------------------

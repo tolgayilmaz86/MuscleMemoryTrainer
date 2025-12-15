@@ -71,10 +71,100 @@ class ActiveBrakeConfig:
     grid_step_percent: int
 
 
+# -------------------------------------------------------------------------
+# Default values for all settings
+# -------------------------------------------------------------------------
+
+# Device defaults
+DEFAULT_PEDALS_REPORT_LEN: int = 4
+DEFAULT_WHEEL_REPORT_LEN: int = 8
+DEFAULT_THROTTLE_OFFSET: int = 1
+DEFAULT_BRAKE_OFFSET: int = 2
+DEFAULT_STEERING_OFFSET: int = 0
+DEFAULT_STEERING_CENTER: int = 128
+DEFAULT_STEERING_RANGE: int = 900
+
+# UI defaults
+DEFAULT_THROTTLE_TARGET: int = 60
+DEFAULT_BRAKE_TARGET: int = 40
+DEFAULT_GRID_STEP_PERCENT: int = 10
+DEFAULT_UPDATE_HZ: int = 60
+DEFAULT_SHOW_STEERING: bool = True
+DEFAULT_SHOW_WATERMARK: bool = True
+DEFAULT_WINDOW_WIDTH: int = 1080
+DEFAULT_WINDOW_HEIGHT: int = 600
+
+# Active Brake defaults
+DEFAULT_ACTIVE_BRAKE_GRID_STEP: int = 10
+
+
 def config_path() -> Path:
+    # e.g., C:\Users\<user>\AppData\Local\Muscle Memory Trainer on Windows
     config_dir = Path(QStandardPaths.writableLocation(QStandardPaths.AppConfigLocation))
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir / "config.ini"
+
+
+def ensure_config_exists() -> None:
+    """Create config.ini with all default values if it doesn't exist."""
+    path = config_path()
+    if path.exists():
+        return
+
+    parser = configparser.ConfigParser()
+
+    # Pedals section (no device selected by default, but include calibration defaults)
+    parser["pedals"] = {
+        "vendor_id": "0x0",
+        "product_id": "0x0",
+        "product_string": "",
+        "report_len": str(DEFAULT_PEDALS_REPORT_LEN),
+        "throttle_offset": str(DEFAULT_THROTTLE_OFFSET),
+        "brake_offset": str(DEFAULT_BRAKE_OFFSET),
+    }
+
+    # Wheel section
+    parser["wheel"] = {
+        "vendor_id": "0x0",
+        "product_id": "0x0",
+        "product_string": "",
+        "report_len": str(DEFAULT_WHEEL_REPORT_LEN),
+        "steering_offset": str(DEFAULT_STEERING_OFFSET),
+        "steering_center": str(DEFAULT_STEERING_CENTER),
+        "steering_range": str(DEFAULT_STEERING_RANGE),
+    }
+
+    # UI section
+    parser["ui"] = {
+        "throttle_target": str(DEFAULT_THROTTLE_TARGET),
+        "brake_target": str(DEFAULT_BRAKE_TARGET),
+        "grid_step_percent": str(DEFAULT_GRID_STEP_PERCENT),
+        "update_hz": str(DEFAULT_UPDATE_HZ),
+        "show_steering": "true" if DEFAULT_SHOW_STEERING else "false",
+        "show_watermark": "true" if DEFAULT_SHOW_WATERMARK else "false",
+        "throttle_sound_enabled": "true",
+        "throttle_sound_path": "",
+        "brake_sound_enabled": "true",
+        "brake_sound_path": "",
+        "window_width": str(DEFAULT_WINDOW_WIDTH),
+        "window_height": str(DEFAULT_WINDOW_HEIGHT),
+    }
+
+    # Trail Brake section
+    parser["trail_brake"] = {
+        "selected_trace": "",
+    }
+
+    # Trail Brake traces section (empty by default)
+    parser["trail_brake_traces"] = {}
+
+    # Active Brake section
+    parser["active_brake"] = {
+        "grid_step_percent": str(DEFAULT_ACTIVE_BRAKE_GRID_STEP),
+    }
+
+    with path.open("w", encoding="utf-8") as f:
+        parser.write(f)
 
 
 def _load_device_section(parser: configparser.ConfigParser, section_name: str) -> Optional[dict]:
@@ -151,6 +241,8 @@ def load_wheel_config() -> Optional[WheelConfig]:
 
 
 def load_input_profile() -> InputProfile:
+    """Load the full input profile, creating default config if needed."""
+    ensure_config_exists()
     return InputProfile(pedals=load_pedals_config(), wheel=load_wheel_config(), ui=load_ui_config())
 
 

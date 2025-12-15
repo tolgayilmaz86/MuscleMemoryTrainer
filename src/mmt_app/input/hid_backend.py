@@ -92,3 +92,20 @@ class HidSession:
             latest = data
         return latest
 
+    def read_report(self, *, report_len: int, timeout_ms: int = 50) -> Optional[list[int]]:
+        """Read a single report with optional blocking timeout.
+        
+        Use this for devices that only send reports on input change.
+        
+        Args:
+            report_len: Expected report length in bytes.
+            timeout_ms: Timeout in milliseconds (0 = non-blocking).
+            
+        Returns:
+            Report data or None if no data available.
+        """
+        if self._handle is None:
+            return None
+        data = self._handle.read(int(report_len), timeout_ms=timeout_ms)
+        return data if data else None
+

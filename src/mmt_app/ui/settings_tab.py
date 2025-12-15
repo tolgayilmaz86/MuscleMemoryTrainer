@@ -38,6 +38,19 @@ from mmt_app.config import (
     load_input_profile,
     save_input_profile,
     save_ui_config,
+    DEFAULT_PEDALS_REPORT_LEN,
+    DEFAULT_WHEEL_REPORT_LEN,
+    DEFAULT_THROTTLE_OFFSET,
+    DEFAULT_BRAKE_OFFSET,
+    DEFAULT_STEERING_OFFSET,
+    DEFAULT_STEERING_CENTER,
+    DEFAULT_STEERING_RANGE,
+    DEFAULT_THROTTLE_TARGET,
+    DEFAULT_BRAKE_TARGET,
+    DEFAULT_GRID_STEP_PERCENT,
+    DEFAULT_UPDATE_HZ,
+    DEFAULT_SHOW_STEERING,
+    DEFAULT_SHOW_WATERMARK,
 )
 from mmt_app.input.hid_backend import HidSession, HidDeviceInfo, hid_available, enumerate_devices
 from mmt_app.input.calibration import (
@@ -54,13 +67,6 @@ from mmt_app.input.calibration import (
 from mmt_app.input.device_mgr import (
     DeviceManager,
     format_device_label,
-    DEFAULT_PEDALS_REPORT_LEN,
-    DEFAULT_WHEEL_REPORT_LEN,
-    DEFAULT_THROTTLE_OFFSET,
-    DEFAULT_BRAKE_OFFSET,
-    DEFAULT_STEERING_OFFSET,
-    DEFAULT_STEERING_CENTER,
-    DEFAULT_STEERING_RANGE,
 )
 from mmt_app.embedded_sound import get_embedded_sound_path
 from mmt_app.ui.utils import clamp_int
@@ -74,15 +80,6 @@ if TYPE_CHECKING:
 
 _UI_SAVE_DEBOUNCE_MS: int = 500
 """Debounce interval (ms) for persisting UI settings."""
-
-_DEFAULT_THROTTLE_TARGET: int = 60
-"""Default throttle target percentage."""
-
-_DEFAULT_BRAKE_TARGET: int = 40
-"""Default brake target percentage."""
-
-_DEFAULT_GRID_STEP: int = 10
-"""Default grid step percentage."""
 
 
 class SettingsTab(QWidget):
@@ -242,6 +239,7 @@ class SettingsTab(QWidget):
         self._calibration_device: str | None = None
         self._calibration_axis: str | None = None
         self._calibration_callback: Callable | None = None
+        self._calibration_phase: str = "baseline"  # "baseline" or "active"
         # Setup wizard state
         self._setup_wizard_dialog: QDialog | None = None
         self._setup_wizard_label: QLabel | None = None
@@ -459,7 +457,7 @@ class SettingsTab(QWidget):
 
     def _toggle_advanced_settings(self, state: int) -> None:
         """Toggle visibility of advanced calibration settings."""
-        self._advanced_widget.setVisible(state == Qt.Checked)
+        self._advanced_widget.setVisible(state == Qt.Checked.value)
 
     def _build_sound_group(self) -> QGroupBox:
         """Build the sound settings group box."""
@@ -518,11 +516,11 @@ class SettingsTab(QWidget):
         self._throttle_target_slider.setPageStep(5)
         self._throttle_target_slider.setTickInterval(10)
         self._throttle_target_slider.setTickPosition(QSlider.TicksBelow)
-        self._throttle_target_slider.setValue(_DEFAULT_THROTTLE_TARGET)
+        self._throttle_target_slider.setValue(DEFAULT_THROTTLE_TARGET)
         self._throttle_target_slider.valueChanged.connect(self._on_targets_changed_internal)
         self._throttle_target_slider.valueChanged.connect(self._schedule_save_ui_settings)
 
-        self._throttle_target_label = QLabel(f"{_DEFAULT_THROTTLE_TARGET}%")
+        self._throttle_target_label = QLabel(f"{DEFAULT_THROTTLE_TARGET}%")
         self._throttle_target_label.setObjectName("throttleTargetValue")
         self._throttle_target_label.setStyleSheet("color: #22c55e;")
         self._throttle_target_label.setMinimumWidth(52)
@@ -546,11 +544,11 @@ class SettingsTab(QWidget):
         self._brake_target_slider.setPageStep(5)
         self._brake_target_slider.setTickInterval(10)
         self._brake_target_slider.setTickPosition(QSlider.TicksBelow)
-        self._brake_target_slider.setValue(_DEFAULT_BRAKE_TARGET)
+        self._brake_target_slider.setValue(DEFAULT_BRAKE_TARGET)
         self._brake_target_slider.valueChanged.connect(self._on_targets_changed_internal)
         self._brake_target_slider.valueChanged.connect(self._schedule_save_ui_settings)
 
-        self._brake_target_label = QLabel(f"{_DEFAULT_BRAKE_TARGET}%")
+        self._brake_target_label = QLabel(f"{DEFAULT_BRAKE_TARGET}%")
         self._brake_target_label.setObjectName("brakeTargetValue")
         self._brake_target_label.setStyleSheet("color: #ef4444;")
         self._brake_target_label.setMinimumWidth(52)
@@ -573,11 +571,11 @@ class SettingsTab(QWidget):
         self._grid_step_slider.setPageStep(10)
         self._grid_step_slider.setTickInterval(10)
         self._grid_step_slider.setTickPosition(QSlider.TicksBelow)
-        self._grid_step_slider.setValue(_DEFAULT_GRID_STEP)
+        self._grid_step_slider.setValue(DEFAULT_GRID_STEP_PERCENT)
         self._grid_step_slider.valueChanged.connect(self._on_grid_step_slider_changed)
         self._grid_step_slider.valueChanged.connect(self._schedule_save_ui_settings)
 
-        self._grid_step_label = QLabel(f"{_DEFAULT_GRID_STEP}%")
+        self._grid_step_label = QLabel(f"{DEFAULT_GRID_STEP_PERCENT}%")
         self._grid_step_label.setMinimumWidth(52)
 
         grid_row = QWidget()
@@ -689,21 +687,35 @@ class SettingsTab(QWidget):
         pedals_cfg = None
         wheel_cfg = None
         
-        if self._pedals_device:
+        # Get pedals device info from connected device or combo selection
+        pedals_dev = self._pedals_device
+        if not pedals_dev:
+            pedals_idx = self._pedals_device_combo.currentData()
+            if pedals_idx is not None and pedals_idx < len(self._devices):
+                pedals_dev = self._devices[pedals_idx]
+        
+        if pedals_dev:
             pedals_cfg = PedalsConfig(
-                vendor_id=self._pedals_device.device_id.vendor_id,
-                product_id=self._pedals_device.device_id.product_id,
-                product_string=self._pedals_device.product_string,
+                vendor_id=pedals_dev.device_id.vendor_id,
+                product_id=pedals_dev.device_id.product_id,
+                product_string=pedals_dev.product_string,
                 report_len=self._pedals_report_len.value(),
                 throttle_offset=self._throttle_offset.value(),
                 brake_offset=self._brake_offset.value(),
             )
         
-        if self._wheel_device:
+        # Get wheel device info from connected device or combo selection
+        wheel_dev = self._wheel_device
+        if not wheel_dev:
+            wheel_idx = self._wheel_device_combo.currentData()
+            if wheel_idx is not None and wheel_idx < len(self._devices):
+                wheel_dev = self._devices[wheel_idx]
+        
+        if wheel_dev:
             wheel_cfg = WheelConfig(
-                vendor_id=self._wheel_device.device_id.vendor_id,
-                product_id=self._wheel_device.device_id.product_id,
-                product_string=self._wheel_device.product_string,
+                vendor_id=wheel_dev.device_id.vendor_id,
+                product_id=wheel_dev.device_id.product_id,
+                product_string=wheel_dev.product_string,
                 report_len=self._wheel_report_len.value(),
                 steering_offset=self._steering_offset.value(),
                 steering_center=self._steering_center,
@@ -797,6 +809,7 @@ class SettingsTab(QWidget):
         self._calibration_device = device
         self._calibration_axis = axis
         self._calibration_callback = on_complete
+        self._calibration_phase = "baseline"
         self._baseline_samples = []
         self._active_samples = []
 
@@ -806,6 +819,7 @@ class SettingsTab(QWidget):
 
     def _switch_to_active_capture(self) -> None:
         """Transition from baseline capture to active capture."""
+        self._calibration_phase = "active"
         self._set_status(
             f"Now press/move the {self._calibration_axis} input for 2 seconds..."
         )
@@ -862,14 +876,18 @@ class SettingsTab(QWidget):
             if self._calibration_device == "pedals"
             else self._wheel_report_len.value()
         )
+        # Try non-blocking first for devices that send continuous reports
         report = session.read_latest_report(
             report_len=report_len, max_reads=MAX_READS_PER_TICK
         )
+        # Fall back to blocking read for devices that only send on change
+        if report is None:
+            report = session.read_report(report_len=report_len, timeout_ms=15)
         if report is None:
             return
 
-        # First phase: baseline; second phase: active
-        if self._active_samples:
+        # Append to correct sample list based on current phase
+        if self._calibration_phase == "active":
             self._active_samples.append(report)
         else:
             self._baseline_samples.append(report)
@@ -1098,8 +1116,12 @@ class SettingsTab(QWidget):
         # Try reading with max length to see actual report size
         max_len = 64
         samples = []
-        for _ in range(10):
+        for _ in range(20):
+            # Try non-blocking first
             report = session.read_latest_report(report_len=max_len, max_reads=5)
+            # Fall back to blocking read for devices that only send on change
+            if not report:
+                report = session.read_report(report_len=max_len, timeout_ms=50)
             if report:
                 samples.append(len(report))
 

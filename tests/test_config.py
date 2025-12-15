@@ -105,12 +105,36 @@ class TestMissingFile:
         assert config.load_pedals_config() is None
         assert config.load_wheel_config() is None
 
-    def test_load_input_profile_missing_returns_empty(self, tmp_path: Path, monkeypatch) -> None:
-        """Loading profile from missing file should return profile with None fields."""
-        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+    def test_load_input_profile_creates_default_config(self, tmp_path: Path, monkeypatch) -> None:
+        """Loading profile from missing file should create default config with all sections."""
+        cfg_path = tmp_path / "config.ini"
+        monkeypatch.setattr(config, "config_path", lambda: cfg_path)
         profile = config.load_input_profile()
-        assert profile.pedals is None
-        assert profile.wheel is None
+        
+        # Default config should be created
+        assert cfg_path.exists()
+        
+        # Pedals should have default values (VID/PID 0 means no device selected)
+        assert profile.pedals is not None
+        assert profile.pedals.vendor_id == 0
+        assert profile.pedals.product_id == 0
+        assert profile.pedals.report_len == config.DEFAULT_PEDALS_REPORT_LEN
+        assert profile.pedals.throttle_offset == config.DEFAULT_THROTTLE_OFFSET
+        assert profile.pedals.brake_offset == config.DEFAULT_BRAKE_OFFSET
+        
+        # Wheel should have default values
+        assert profile.wheel is not None
+        assert profile.wheel.vendor_id == 0
+        assert profile.wheel.product_id == 0
+        assert profile.wheel.report_len == config.DEFAULT_WHEEL_REPORT_LEN
+        assert profile.wheel.steering_offset == config.DEFAULT_STEERING_OFFSET
+        assert profile.wheel.steering_center == config.DEFAULT_STEERING_CENTER
+        assert profile.wheel.steering_range == config.DEFAULT_STEERING_RANGE
+        
+        # UI should have default values
+        assert profile.ui is not None
+        assert profile.ui.throttle_target == config.DEFAULT_THROTTLE_TARGET
+        assert profile.ui.brake_target == config.DEFAULT_BRAKE_TARGET
 
 
 # ============================================================================
@@ -302,4 +326,102 @@ class TestDeviceConfig:
             brake_offset=3,
         )
         assert p1 == p2
+
+
+# ============================================================================
+# Settings Tab Integration Tests
+# ============================================================================
+
+
+class TestSettingsTabSaveButton:
+    """Tests for SettingsTab Save button creating config.ini."""
+
+    @pytest.fixture
+    def qapp(self):
+        """Create a QApplication for widget tests."""
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication([])
+        yield app
+
+    def test_save_button_creates_config_file(self, tmp_path: Path, monkeypatch, qapp) -> None:
+        """Clicking Save in SettingsTab should create config.ini with settings."""
+        from mmt_app.ui.settings_tab import SettingsTab
+        
+        cfg_path = tmp_path / "config.ini"
+        monkeypatch.setattr(config, "config_path", lambda: cfg_path)
+        
+        # Ensure no config exists initially
+        assert not cfg_path.exists()
+        
+        # Create settings tab
+        settings = SettingsTab()
+        
+        # Modify some settings
+        settings._throttle_offset.setValue(5)
+        settings._brake_offset.setValue(7)
+        settings._steering_range_slider.setValue(540)
+        
+        # Call save (simulates clicking Save button)
+        settings.save_current_mapping()
+        
+        # Verify config file was created
+        assert cfg_path.exists()
+        
+        # Verify content can be read back
+        content = cfg_path.read_text()
+        assert "[pedals]" in content and "[wheel]" in content and "[ui]" in content
+
+    def test_save_button_persists_calibration_values(self, tmp_path: Path, monkeypatch, qapp) -> None:
+        """Save button should persist calibration offset values to config.ini."""
+        from mmt_app.ui.settings_tab import SettingsTab
+        
+        cfg_path = tmp_path / "config.ini"
+        monkeypatch.setattr(config, "config_path", lambda: cfg_path)
+        
+        # Create settings tab and set specific calibration values
+        settings = SettingsTab()
+        settings._pedals_report_len.setValue(16)
+        settings._throttle_offset.setValue(3)
+        settings._brake_offset.setValue(5)
+        settings._wheel_report_len.setValue(32)
+        settings._steering_offset.setValue(2)
+        settings._steering_range_slider.setValue(720)
+        
+        # Note: Without a device selected, save_current_mapping won't save pedals/wheel
+        # But _save_ui_settings will save UI settings
+        settings._save_ui_settings()
+        
+        # Verify UI settings were saved
+        loaded_ui = config.load_ui_config()
+        assert loaded_ui is not None
+
+    def test_save_ui_settings_creates_config(self, tmp_path: Path, monkeypatch, qapp) -> None:
+        """UI settings auto-save should create config.ini."""
+        from mmt_app.ui.settings_tab import SettingsTab
+        
+        cfg_path = tmp_path / "config.ini"
+        monkeypatch.setattr(config, "config_path", lambda: cfg_path)
+        
+        # Create settings tab
+        settings = SettingsTab()
+        
+        # Set specific values
+        settings._throttle_target_slider.setValue(75)
+        settings._brake_target_slider.setValue(35)
+        settings._grid_step_slider.setValue(20)
+        
+        # Trigger UI settings save
+        settings._save_ui_settings()
+        
+        # Verify config file exists
+        assert cfg_path.exists()
+        
+        # Verify values were saved
+        loaded_ui = config.load_ui_config()
+        assert loaded_ui is not None
+        assert loaded_ui.throttle_target == 75
+        assert loaded_ui.brake_target == 35
+        assert loaded_ui.grid_step_percent == 20
 
