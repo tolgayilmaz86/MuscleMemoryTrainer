@@ -95,12 +95,30 @@ python -m mmt_app
 ```powershell
 # Build using the provided spec file
 pyinstaller --clean --noconfirm mmt_app.spec
-
-# Or use the VS Code task
-# Run Task: "PyInstaller build"
 ```
 
 **Output**: `dist/MuscleMemoryTrainer/MuscleMemoryTrainer.exe` (one-folder build)
+
+### VS Code Integration
+
+The project includes pre-configured VS Code tasks and launch configurations for common operations.
+
+#### Using Tasks (Ctrl+Shift+P → "Tasks: Run Task")
+
+| Task | Description |
+|------|-------------|
+| `PyInstaller build` | Build the executable |
+| `PyInstaller clean build` | Clean build (removes cache first) |
+| `Run tests` | Run pytest with verbose output |
+
+#### Using Run/Debug Menu (F5 or Ctrl+Shift+D)
+
+| Configuration | Description |
+|---------------|-------------|
+| `Run MuscleMemoryTrainer` | Launch the app with debugger attached |
+| `Build` | Run PyInstaller build with debugger |
+| `Clean Build` | Run PyInstaller clean build with debugger |
+| `Run Tests` | Run pytest with debugger attached |
 
 #### Build Options
 
@@ -204,7 +222,7 @@ Settings are persisted to `config.ini` in your user config directory:
 
 ## Testing
 
-The project uses **pytest** with 105+ tests covering configuration, algorithms, and utilities.
+The project uses **pytest** with 155+ tests covering configuration, calibration, telemetry, algorithms, and utilities.
 
 ```powershell
 # Run all tests
@@ -214,11 +232,13 @@ pytest
 pytest -v
 
 # Run specific test file
-pytest tests/test_static_brake.py
+pytest tests/test_calibration.py
 
 # Run with coverage (requires pytest-cov)
 pytest --cov=src/mmt_app --cov-report=html
 ```
+
+**VS Code**: Use `Ctrl+Shift+P` → "Tasks: Run Task" → "Run tests", or press `F5` and select "Run Tests" to debug tests.
 
 ### Test Categories
 

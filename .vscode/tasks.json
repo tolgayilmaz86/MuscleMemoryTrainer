@@ -8,6 +8,22 @@
       "options": { "venv": ".venv" },
       "group": "build",
       "problemMatcher": []
+    },
+    {
+      "label": "PyInstaller clean build",
+      "type": "shell",
+      "command": "pyinstaller mmt_app.spec --clean --noconfirm",
+      "options": { "venv": ".venv" },
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Run tests",
+      "type": "shell",
+      "command": "pytest -v",
+      "options": { "venv": ".venv" },
+      "group": "test",
+      "problemMatcher": []
     }
   ]
 }

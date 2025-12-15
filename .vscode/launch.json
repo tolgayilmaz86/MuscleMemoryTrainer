@@ -10,6 +10,36 @@
       "env": {
         "PYTHONPATH": "${workspaceFolder}/src"
       }
+    },
+    {
+      "name": "Build",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/.venv/Scripts/pyinstaller.exe",
+      "args": ["mmt_app.spec", "--noconfirm"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Clean Build",
+      "type": "python",
+      "request": "launch",
+      "program": "${workspaceFolder}/.venv/Scripts/pyinstaller.exe",
+      "args": ["mmt_app.spec", "--clean", "--noconfirm"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Run Tests",
+      "type": "python",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-v"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
     }
   ]
 }
