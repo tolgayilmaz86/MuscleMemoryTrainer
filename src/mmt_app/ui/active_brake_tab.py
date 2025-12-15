@@ -23,6 +23,18 @@ from PySide6.QtWidgets import (
 
 from ..config import ActiveBrakeConfig, load_active_brake_config, save_active_brake_config
 from .watermark_chart_view import WatermarkChartView
+from .utils import AXIS_MAX, AXIS_MIN, clamp
+
+# Constants for active brake training
+_DEFAULT_MID_X = 50.0
+_DEFAULT_AXIS_X_MAX = 100.0
+_DEFAULT_SCROLL_SPEED = 1.5
+_DEFAULT_TIMER_INTERVAL = 40
+_MIN_GRID_STEP = 5
+_MAX_GRID_STEP = 50
+_DEFAULT_GRID_STEP = 10
+_MIN_UPDATE_RATE_HZ = 5
+_MAX_UPDATE_RATE_HZ = 120
 
 
 @dataclass
@@ -45,73 +57,83 @@ class ActiveBrakeTab(QWidget):
         """Initialize the tab with a callable that supplies live brake percentage."""
         super().__init__()
         self._read_brake_percent = read_brake_percent
-        self._mid_x = 50.0
-        self._axis_x_max = 100.0
-        self._axis_y_min = 0.0
-        self._axis_y_max = 100.0
-        self._scroll_speed = 1.5
+        self._init_chart_params()
+        self._init_ui()
+        self._init_state()
+
+    def _init_chart_params(self) -> None:
+        """Initialize chart parameters and constants."""
+        self._mid_x = _DEFAULT_MID_X
+        self._axis_x_max = _DEFAULT_AXIS_X_MAX
+        self._axis_y_min = float(AXIS_MIN)
+        self._axis_y_max = float(AXIS_MAX)
+        self._scroll_speed = _DEFAULT_SCROLL_SPEED
         self._target_queue: deque[float] = deque()
 
-        self._timer = QTimer(interval=40)
+    def _init_ui(self) -> None:
+        """Initialize UI components."""
+        self._timer = QTimer(interval=_DEFAULT_TIMER_INTERVAL)
         self._timer.timeout.connect(self._on_tick)
 
-        self.grid_slider = QSlider(Qt.Horizontal)
-        self.grid_slider.setRange(10, 50)
-        self.grid_slider.setSingleStep(5)
-        self.grid_slider.setPageStep(5)
-        self.grid_slider.setTickInterval(5)
-        self.grid_slider.setTickPosition(QSlider.TicksBelow)
-        self.grid_slider.setValue(10)
-        self.grid_slider.valueChanged.connect(self._on_grid_changed)
-        self.grid_value_label = QLabel()
-        self._update_grid_value_label(self.grid_slider.value())
+        self._grid_slider = QSlider(Qt.Horizontal)
+        self._grid_slider.setRange(_DEFAULT_GRID_STEP, _MAX_GRID_STEP)
+        self._grid_slider.setSingleStep(_MIN_GRID_STEP)
+        self._grid_slider.setPageStep(_MIN_GRID_STEP)
+        self._grid_slider.setTickInterval(_MIN_GRID_STEP)
+        self._grid_slider.setTickPosition(QSlider.TicksBelow)
+        self._grid_slider.setValue(_DEFAULT_GRID_STEP)
+        self._grid_slider.valueChanged.connect(self._on_grid_changed)
+        self._grid_value_label = QLabel()
+        self._update_grid_value_label(self._grid_slider.value())
         grid_row = QWidget()
         grid_row_layout = QHBoxLayout(grid_row)
         grid_row_layout.setContentsMargins(0, 0, 0, 0)
-        grid_row_layout.addWidget(self.grid_slider, 1)
-        grid_row_layout.addWidget(self.grid_value_label)
+        grid_row_layout.addWidget(self._grid_slider, 1)
+        grid_row_layout.addWidget(self._grid_value_label)
 
-        self.status = QLabel("Press Start, then match the red target as it crosses the center line.")
+        self._status_label = QLabel("Press Start, then match the red target as it crosses the center line.")
 
-        self.start_btn = QPushButton("Start")
-        self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.start_btn.clicked.connect(self.toggle_running)
+        self._start_btn = QPushButton("Start")
+        self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._start_btn.clicked.connect(self.toggle_running)
 
-        self.reset_btn = QPushButton("Reset")
-        self.reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self.reset_btn.clicked.connect(self.reset)
-        self.watermark_checkbox = QCheckBox("Show watermark")
-        self.watermark_checkbox.setChecked(True)
-        self.watermark_checkbox.stateChanged.connect(self._on_watermark_toggled)
+        self._reset_btn = QPushButton("Reset")
+        self._reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self._reset_btn.clicked.connect(self.reset)
+        self._watermark_checkbox = QCheckBox("Show watermark")
+        self._watermark_checkbox.setChecked(True)
+        self._watermark_checkbox.stateChanged.connect(self._on_watermark_toggled)
 
         (
-            self.chart,
-            self.series_target,
-            self.series_user,
-            self.series_midline,
-            self.axis_x,
-            self.axis_y,
+            self._chart,
+            self._series_target,
+            self._series_user,
+            self._series_midline,
+            self._axis_x,
+            self._axis_y,
         ) = self._create_chart()
-        self.chart_view = WatermarkChartView(self.chart)
+        self._chart_view = WatermarkChartView(self._chart)
 
         controls = QFormLayout()
         controls.addRow("Grid division", grid_row)
-        controls.addRow("Watermark", self.watermark_checkbox)
+        controls.addRow("Watermark", self._watermark_checkbox)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
-        buttons.addWidget(self.start_btn)
-        buttons.addWidget(self.reset_btn)
+        buttons.addWidget(self._start_btn)
+        buttons.addWidget(self._reset_btn)
         buttons.addStretch()
 
         layout = QVBoxLayout()
         layout.addLayout(controls)
         layout.addLayout(buttons)
-        layout.addWidget(self.chart_view, stretch=1)
-        layout.addWidget(self.status)
+        layout.addWidget(self._chart_view, stretch=1)
+        layout.addWidget(self._status_label)
         self.setLayout(layout)
-        self.chart_view.set_watermark_visible(self.watermark_checkbox.isChecked())
+        self._chart_view.set_watermark_visible(self._watermark_checkbox.isChecked())
 
+    def _init_state(self) -> None:
+        """Initialize application state."""
         self._state = _ActiveBrakeState(
             running=False,
             user_cursor=0,
@@ -163,53 +185,53 @@ class ActiveBrakeTab(QWidget):
 
     def _save_config(self) -> None:
         """Persist the current grid spacing to config."""
-        step = int(self.grid_slider.value())
+        step = int(self._grid_slider.value())
         save_active_brake_config(ActiveBrakeConfig(grid_step_percent=step))
 
     def _on_grid_changed(self, value: int) -> None:
         """Handle user selecting a new grid step via the slider."""
-        step = int(round(value / 5) * 5)
-        step = max(5, min(50, step))
+        step = int(round(value / _MIN_GRID_STEP) * _MIN_GRID_STEP)
+        step = max(_MIN_GRID_STEP, min(_MAX_GRID_STEP, step))
         if step != value:
-            self.grid_slider.blockSignals(True)
-            self.grid_slider.setValue(step)
-            self.grid_slider.blockSignals(False)
+            self._grid_slider.blockSignals(True)
+            self._grid_slider.setValue(step)
+            self._grid_slider.blockSignals(False)
         self._update_grid_value_label(step)
         self._apply_grid_step(step)
         self._save_config()
 
     def _apply_grid_step(self, step_percent: int) -> None:
         """Apply grid tick spacing on the Y axis and sync the slider."""
-        step_percent = max(5, min(50, int(step_percent)))
+        step_percent = max(_MIN_GRID_STEP, min(_MAX_GRID_STEP, int(step_percent)))
         try:
-            self.grid_slider.blockSignals(True)
-            self.grid_slider.setValue(step_percent)
+            self._grid_slider.blockSignals(True)
+            self._grid_slider.setValue(step_percent)
         finally:
-            self.grid_slider.blockSignals(False)
+            self._grid_slider.blockSignals(False)
         self._update_grid_value_label(step_percent)
         tick_count = int((self._axis_y_max - self._axis_y_min) / step_percent) + 1
         try:
-            self.axis_y.setTickCount(tick_count)
+            self._axis_y.setTickCount(tick_count)
         except Exception:
             pass
-        if hasattr(self.axis_y, "setTickInterval"):
-            self.axis_y.setTickInterval(float(step_percent))
+        if hasattr(self._axis_y, "setTickInterval"):
+            self._axis_y.setTickInterval(float(step_percent))
 
     def toggle_running(self) -> None:
         """Toggle the training loop between running/paused states."""
         if self._state.running:
             self._timer.stop()
             self._state.running = False
-            self.start_btn.setText("Start")
-            self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-            self.status.setText("Paused. Press Start to continue.")
+            self._start_btn.setText("Start")
+            self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+            self._status_label.setText("Paused. Press Start to continue.")
             return
 
         self._timer.start()
         self._state.running = True
-        self.start_btn.setText("Pause")
-        self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
-        self.status.setText("Match the red target as it crosses the center line.")
+        self._start_btn.setText("Pause")
+        self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+        self._status_label.setText("Match the red target as it crosses the center line.")
 
     def reset(self) -> None:
         """Reset target/user traces and put the tab into a ready state."""
@@ -224,9 +246,9 @@ class ActiveBrakeTab(QWidget):
         self._render_user()
         self._render_midline()
         self._set_watermark_percent(0)
-        self.start_btn.setText("Start")
-        self.start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.status.setText("Reset. Press Start when ready.")
+        self._start_btn.setText("Start")
+        self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._status_label.setText("Reset. Press Start when ready.")
 
     def _seed_target_points(self) -> list[QPointF]:
         """Fill the chart initially by walking across the X axis with queued target values."""
@@ -242,16 +264,16 @@ class ActiveBrakeTab(QWidget):
     def _render_target(self) -> None:
         """Render the target series with current points sorted by X."""
         points = sorted(self._state.target_points, key=lambda p: p.x())
-        self.series_target.replace(points)
+        self._series_target.replace(points)
 
     def _render_user(self) -> None:
         """Render the user series with current points sorted by X."""
         points = sorted(self._state.user_points, key=lambda p: p.x())
-        self.series_user.replace(points)
+        self._series_user.replace(points)
 
     def _render_midline(self) -> None:
         """Draw the vertical midline where the target crosses the user cursor."""
-        self.series_midline.replace(
+        self._series_midline.replace(
             [QPointF(self._mid_x, self._axis_y_min), QPointF(self._mid_x, self._axis_y_max)]
         )
 
@@ -415,23 +437,26 @@ class ActiveBrakeTab(QWidget):
 
     def _clamp_y(self, value: float) -> float:
         """Clamp a value to the visible Y range."""
-        return max(self._axis_y_min, min(self._axis_y_max, value))
+        return clamp(value, self._axis_y_min, self._axis_y_max)
 
     def _update_grid_value_label(self, step_percent: int) -> None:
-        self.grid_value_label.setText(f"{int(step_percent)}%")
+        """Update the grid value label with the current step."""
+        self._grid_value_label.setText(f"{int(step_percent)}%")
 
     def _set_watermark_percent(self, value: float) -> None:
+        """Update the watermark display with the current brake percentage."""
         try:
-            self.chart_view.set_watermark_text(f"{int(round(value))}")
-            self.chart_view.set_watermark_visible(self.watermark_checkbox.isChecked())
+            self._chart_view.set_watermark_text(f"{int(round(value))}")
+            self._chart_view.set_watermark_visible(self._watermark_checkbox.isChecked())
         except Exception:
             pass
 
     def _on_watermark_toggled(self, state: int) -> None:
-        self.chart_view.set_watermark_visible(bool(state))
+        """Handle watermark checkbox toggle."""
+        self._chart_view.set_watermark_visible(bool(state))
 
     def set_update_rate(self, hz: int) -> None:
         """Adjust timer interval for how often the active brake chart ticks."""
-        hz = max(5, min(120, int(hz)))
+        hz = max(_MIN_UPDATE_RATE_HZ, min(_MAX_UPDATE_RATE_HZ, int(hz)))
         interval_ms = max(1, int(1000 / hz))
         self._timer.setInterval(interval_ms)

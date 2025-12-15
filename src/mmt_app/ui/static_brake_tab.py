@@ -14,12 +14,12 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QPushButton,
     QSlider,
     QVBoxLayout,
     QWidget,
-    QInputDialog,
 )
 
 from ..config import (
@@ -30,11 +30,22 @@ from ..config import (
     save_static_brake_trace,
 )
 from ..static_brake import BrakeTrace, presets as preset_traces, random_trace
+from .utils import AXIS_MAX, clamp, clamp_int
 from .watermark_chart_view import WatermarkChartView
+
+# Constants
+DEFAULT_TRACE_LENGTH = 150
+MIN_TRACE_LENGTH = 20
+MAX_TRACE_LENGTH = 500
+_TIMER_INTERVAL_MS = 20
+_BRAKE_MIN = 0.0
+_BRAKE_MAX = 100.0
 
 
 @dataclass(frozen=True, slots=True)
-class StaticBrakeState:
+class _StaticBrakeState:
+    """Internal state for the static brake training tab."""
+
     trace: BrakeTrace
     user_points: list[int]
     cursor: int
@@ -45,88 +56,101 @@ class StaticBrakeState:
 class StaticBrakeTab(QWidget):
     """Static Brake training tab.
 
-    - X axis is fixed (0..N-1); it does not scroll.
-    - A target brake trace is displayed.
+    Features:
+    - Fixed X axis (0..N-1) that does not scroll.
+    - Target brake trace is displayed.
     - User can record an attempt; brake input is overlaid.
-    - Custom traces and selection persist via config.ini; import/export supported.
+    - Custom traces and selection persist via config.ini.
+    - Import/export functionality for sharing traces.
     """
 
     def __init__(self, *, read_brake_percent: Callable[[], float]) -> None:
+        """Initialize the static brake tab.
+
+        Args:
+            read_brake_percent: Callable that returns current brake percentage.
+        """
         super().__init__()
         self._read_brake_percent = read_brake_percent
 
-        self._timer = QTimer(interval=20)
+        self._timer = QTimer(interval=_TIMER_INTERVAL_MS)
         self._timer.timeout.connect(self._on_tick)
 
-        self.trace_combo = QComboBox()
-        self.status = QLabel("Select a trace or generate one, then press Start.")
-        self.length_slider = QSlider(Qt.Horizontal)
-        self.length_slider.setRange(20, 500)
-        self.length_slider.setValue(150)
-        self.length_slider.setTickInterval(20)
-        self.length_slider.setSingleStep(1)
-        self.length_slider.setPageStep(10)
-        self.length_slider.setTickPosition(QSlider.TicksBelow)
-        self.length_slider.valueChanged.connect(self._on_length_changed)
-        self.length_value = QLabel("150")
-        length_row = QWidget()
-        length_row_layout = QHBoxLayout(length_row)
-        length_row_layout.setContentsMargins(0, 0, 0, 0)
-        length_row_layout.addWidget(self.length_slider, stretch=1)
-        length_row_layout.addWidget(self.length_value)
+        self._init_ui()
+        self._init_state()
 
-        self.start_btn = QPushButton("Start auto")
-        self.start_btn.clicked.connect(self.toggle_recording)
-        self.reset_btn = QPushButton("Reset attempt")
-        self.reset_btn.clicked.connect(self.reset_attempt)
-        self.regen_btn = QPushButton("Regenerate target")
-        self.regen_btn.clicked.connect(self._regenerate_random_trace)
-        self.auto_regen_checkbox = QCheckBox("Auto Generate")
-        self.auto_regen_checkbox.setChecked(True)
-        self.watermark_checkbox = QCheckBox("Show watermark")
-        self.watermark_checkbox.setChecked(True)
-        self.watermark_checkbox.stateChanged.connect(self._on_watermark_toggled)
-        self.save_btn = QPushButton("Save trace")
-        self.save_btn.clicked.connect(self.save_trace_as)
-        self.import_btn = QPushButton("Import trace")
-        self.import_btn.clicked.connect(self.import_trace)
-        self.export_btn = QPushButton("Export trace")
-        self.export_btn.clicked.connect(self.export_trace)
+    def _init_ui(self) -> None:
+        """Initialize all UI components."""
+        self._trace_combo = QComboBox()
+        self._status_label = QLabel("Select a trace or generate one, then press Start.")
 
-        self.chart, self.series_target, self.series_user, self.axis_x, self.axis_y = self._create_chart()
-        self.chart_view = WatermarkChartView(self.chart)
+        self._length_slider = QSlider(Qt.Horizontal)
+        self._length_slider.setRange(MIN_TRACE_LENGTH, MAX_TRACE_LENGTH)
+        self._length_slider.setValue(DEFAULT_TRACE_LENGTH)
+        self._length_slider.setTickInterval(20)
+        self._length_slider.setSingleStep(1)
+        self._length_slider.setPageStep(10)
+        self._length_slider.setTickPosition(QSlider.TicksBelow)
+        self._length_slider.valueChanged.connect(self._on_length_changed)
+
+        self._length_label = QLabel(str(DEFAULT_TRACE_LENGTH))
+        length_row = self._create_slider_row(self._length_slider, self._length_label)
+
+        self._start_btn = QPushButton("Start auto")
+        self._start_btn.clicked.connect(self.toggle_recording)
+        self._reset_btn = QPushButton("Reset attempt")
+        self._reset_btn.clicked.connect(self.reset_attempt)
+        self._regen_btn = QPushButton("Regenerate target")
+        self._regen_btn.clicked.connect(self._regenerate_random_trace)
+        self._auto_regen_checkbox = QCheckBox("Auto Generate")
+        self._auto_regen_checkbox.setChecked(True)
+        self._watermark_checkbox = QCheckBox("Show watermark")
+        self._watermark_checkbox.setChecked(True)
+        self._watermark_checkbox.stateChanged.connect(self._on_watermark_toggled)
+        self._save_btn = QPushButton("Save trace")
+        self._save_btn.clicked.connect(self.save_trace_as)
+        self._import_btn = QPushButton("Import trace")
+        self._import_btn.clicked.connect(self.import_trace)
+        self._export_btn = QPushButton("Export trace")
+        self._export_btn.clicked.connect(self.export_trace)
+
+        self._chart, self._series_target, self._series_user, self._axis_x, self._axis_y = self._create_chart()
+        self._chart_view = WatermarkChartView(self._chart)
 
         form = QFormLayout()
-        form.addRow("Brake trace", self.trace_combo)
+        form.addRow("Brake trace", self._trace_combo)
         form.addRow("Trace length", length_row)
 
         buttons = QHBoxLayout()
-        buttons.addWidget(self.start_btn)
-        buttons.addWidget(self.reset_btn)
-        buttons.addWidget(self.regen_btn)
-        buttons.addWidget(self.auto_regen_checkbox)
-        buttons.addWidget(self.watermark_checkbox)
+        buttons.addWidget(self._start_btn)
+        buttons.addWidget(self._reset_btn)
+        buttons.addWidget(self._regen_btn)
+        buttons.addWidget(self._auto_regen_checkbox)
+        buttons.addWidget(self._watermark_checkbox)
         buttons.addStretch()
-        buttons.addWidget(self.save_btn)
-        buttons.addWidget(self.import_btn)
-        buttons.addWidget(self.export_btn)
+        buttons.addWidget(self._save_btn)
+        buttons.addWidget(self._import_btn)
+        buttons.addWidget(self._export_btn)
 
         layout = QVBoxLayout()
         layout.addLayout(form)
         layout.addLayout(buttons)
-        layout.addWidget(self.chart_view, stretch=1)
-        layout.addWidget(self.status)
+        layout.addWidget(self._chart_view, stretch=1)
+        layout.addWidget(self._status_label)
         self.setLayout(layout)
 
+    def _init_state(self) -> None:
+        """Initialize internal state and load persisted configuration."""
         self._presets = preset_traces()
         self._custom = load_static_brake_traces()
         self._generated_trace: Optional[BrakeTrace] = None
         self._loop_active = False
+
         self._populate_traces()
         self._load_selection()
 
         initial_trace = self._current_trace()
-        self._state = StaticBrakeState(
+        self._state = _StaticBrakeState(
             trace=initial_trace,
             user_points=[0] * len(initial_trace.points),
             cursor=0,
@@ -138,15 +162,25 @@ class StaticBrakeTab(QWidget):
         self._render_user()
         self._set_start_button_text()
         self._set_watermark_percent(0)
-        self.chart_view.set_watermark_visible(self.watermark_checkbox.isChecked())
+        self._chart_view.set_watermark_visible(self._watermark_checkbox.isChecked())
+
+    @staticmethod
+    def _create_slider_row(slider: QSlider, label: QLabel) -> QWidget:
+        """Create a widget containing a slider and its value label."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(slider, stretch=1)
+        layout.addWidget(label)
+        return row
 
     def _create_chart(self):
+        """Create and configure the chart with target and user series."""
         series_target = QLineSeries(name="Target brake %")
         series_user = QLineSeries(name="Your brake %")
 
         series_target.setPen(QPen(QColor("#ef4444"), 2))  # red
-        # Match Active Brake styling: semi-transparent cyan, thicker stroke.
-        series_user.setPen(QPen(QColor(56, 189, 248, 140), 6))
+        series_user.setPen(QPen(QColor(56, 189, 248, 140), 6))  # semi-transparent cyan
 
         chart = QChart()
         chart.addSeries(series_target)
@@ -158,7 +192,7 @@ class StaticBrakeTab(QWidget):
         axis_x.setTitleText("Trace steps")
 
         axis_y = QValueAxis()
-        axis_y.setRange(0, 100)
+        axis_y.setRange(int(_BRAKE_MIN), int(_BRAKE_MAX))
         axis_y.setLabelFormat("%d")
         axis_y.setTitleText("Brake %")
         axis_y.setTickCount(11)
@@ -175,66 +209,72 @@ class StaticBrakeTab(QWidget):
         return chart, series_target, series_user, axis_x, axis_y
 
     def _populate_traces(self) -> None:
+        """Populate the trace combo box with presets and custom traces."""
         try:
-            self.trace_combo.currentIndexChanged.disconnect(self._on_trace_changed)
+            self._trace_combo.currentIndexChanged.disconnect(self._on_trace_changed)
         except Exception:
             pass
 
-        current = self.trace_combo.currentData()
-        self.trace_combo.blockSignals(True)
-        self.trace_combo.clear()
+        current = self._trace_combo.currentData()
+        self._trace_combo.blockSignals(True)
+        self._trace_combo.clear()
 
-        self.trace_combo.addItem("Random (regenerating)", ("random", "Random target"))
+        self._trace_combo.addItem("Random (regenerating)", ("random", "Random target"))
         for name in sorted(self._presets.keys()):
-            self.trace_combo.addItem(f"Preset: {name}", ("preset", name))
+            self._trace_combo.addItem(f"Preset: {name}", ("preset", name))
         for name in sorted(self._custom.keys()):
-            self.trace_combo.addItem(f"Custom: {name}", ("custom", name))
+            self._trace_combo.addItem(f"Custom: {name}", ("custom", name))
 
         if current is not None:
-            for i in range(self.trace_combo.count()):
-                if self.trace_combo.itemData(i) == current:
-                    self.trace_combo.setCurrentIndex(i)
+            for i in range(self._trace_combo.count()):
+                if self._trace_combo.itemData(i) == current:
+                    self._trace_combo.setCurrentIndex(i)
                     break
 
-        self.trace_combo.currentIndexChanged.connect(self._on_trace_changed)
-        self.trace_combo.blockSignals(False)
+        self._trace_combo.currentIndexChanged.connect(self._on_trace_changed)
+        self._trace_combo.blockSignals(False)
 
     def _load_selection(self) -> None:
+        """Load the previously selected trace from configuration."""
         cfg = load_static_brake_config()
         if not cfg or not cfg.selected_trace:
-            self.trace_combo.setCurrentIndex(0)
+            self._trace_combo.setCurrentIndex(0)
             return
-        for i in range(self.trace_combo.count()):
-            data = self.trace_combo.itemData(i)
+        for i in range(self._trace_combo.count()):
+            data = self._trace_combo.itemData(i)
             if data:
                 _, name = data
                 if str(name) == cfg.selected_trace:
-                    self.trace_combo.setCurrentIndex(i)
+                    self._trace_combo.setCurrentIndex(i)
                     return
-            label = self.trace_combo.itemText(i)
+            label = self._trace_combo.itemText(i)
             if label.endswith(cfg.selected_trace) or label == cfg.selected_trace:
-                self.trace_combo.setCurrentIndex(i)
+                self._trace_combo.setCurrentIndex(i)
                 return
 
     def _save_selection(self) -> None:
+        """Persist the currently selected trace name."""
         name = self._selected_trace_name()
         save_static_brake_config(StaticBrakeConfig(selected_trace=name))
 
     def _selected_trace_name(self) -> str:
-        data = self.trace_combo.currentData()
+        """Get the name of the currently selected trace."""
+        data = self._trace_combo.currentData()
         if not data:
             return ""
         _, name = data
         return str(name)
 
     def _current_trace_length(self) -> int:
+        """Get the length of the current trace."""
         try:
             return len(self._state.trace.points)
         except Exception:
             return len(self._current_trace().points)
 
     def _current_trace(self) -> BrakeTrace:
-        data = self.trace_combo.currentData()
+        """Get the currently selected brake trace."""
+        data = self._trace_combo.currentData()
         if not data:
             return self._normalize_trace(next(iter(self._presets.values())))
         kind, name = data
@@ -250,25 +290,30 @@ class StaticBrakeTab(QWidget):
         return self._normalize_trace(trace)
 
     def _on_trace_changed(self) -> None:
+        """Handle trace selection change."""
         self._save_selection()
         self._apply_trace(self._current_trace(), status_text="Trace selected. Press Start.")
 
     def _update_axes(self, *, length: Optional[int] = None) -> None:
+        """Update the X axis range based on trace length."""
         length = length if length is not None else self._current_trace_length()
-        self.axis_x.setRange(0, max(0, length - 1))
+        self._axis_x.setRange(0, max(0, length - 1))
 
     def _render_target(self) -> None:
+        """Render the target series with current trace points."""
         points = [QPointF(float(i), float(v)) for i, v in enumerate(self._state.trace.points)]
-        self.series_target.replace(points)
+        self._series_target.replace(points)
 
     def _render_user(self) -> None:
+        """Render the user series with current attempt points."""
         points = [QPointF(float(i), float(v)) for i, v in enumerate(self._state.user_points)]
-        self.series_user.replace(points)
+        self._series_user.replace(points)
         if self._state.user_points:
             last_index = max(0, min(self._state.cursor - 1, len(self._state.user_points) - 1))
             self._set_watermark_percent(self._state.user_points[last_index])
 
     def toggle_recording(self) -> None:
+        """Toggle the auto-recording loop."""
         if self._loop_active:
             self._loop_active = False
             self._stop_current_attempt(status="Stopped auto-recording. Click Start to resume.")
@@ -278,10 +323,11 @@ class StaticBrakeTab(QWidget):
         self._begin_attempt(status="Auto-recording armed. Press brake to start; release to loop.")
 
     def reset_attempt(self) -> None:
+        """Reset the current attempt state."""
         self._timer.stop()
         self._loop_active = False
         trace = self._state.trace
-        self._state = StaticBrakeState(
+        self._state = _StaticBrakeState(
             trace=trace,
             user_points=[0] * len(trace.points),
             cursor=0,
@@ -289,13 +335,14 @@ class StaticBrakeTab(QWidget):
             has_brake=False,
         )
         self._set_start_button_text()
-        self.status.setText("Attempt reset. Auto-recording stopped.")
+        self._status_label.setText("Attempt reset. Auto-recording stopped.")
         self._update_axes(length=len(trace.points))
         self._render_target()
         self._render_user()
         self._set_watermark_percent(0)
 
     def _on_tick(self) -> None:
+        """Handle timer tick during recording."""
         if not self._state.recording:
             return
         length = len(self._state.user_points)
@@ -315,7 +362,7 @@ class StaticBrakeTab(QWidget):
 
         user_points = list(self._state.user_points)
         user_points[self._state.cursor] = brake
-        self._state = StaticBrakeState(
+        self._state = _StaticBrakeState(
             trace=self._state.trace,
             user_points=user_points,
             cursor=min(self._state.cursor + 1, length),
@@ -328,14 +375,15 @@ class StaticBrakeTab(QWidget):
             self._finish_attempt("Brake returned to 0%.", regen=True)
 
     def _finish_attempt(self, message: str, *, regen: bool) -> None:
+        """Complete the current attempt and optionally regenerate trace."""
         self._timer.stop()
-        if regen and self.auto_regen_checkbox.isChecked() and self._is_random_selected():
+        if regen and self._auto_regen_checkbox.isChecked() and self._is_random_selected():
             self._regenerate_random_trace(
                 status_text=f"{message} New random target ready.",
                 auto_restart=self._loop_active,
             )
             return
-        self._state = StaticBrakeState(
+        self._state = _StaticBrakeState(
             trace=self._state.trace,
             user_points=self._state.user_points,
             cursor=self._state.cursor,
@@ -346,10 +394,11 @@ class StaticBrakeTab(QWidget):
             self._begin_attempt(status=f"{message} Next attempt armed.")
         else:
             self._set_start_button_text()
-            self.status.setText(message)
+            self._status_label.setText(message)
 
     def _read_brake_value(self) -> int:
-        return int(round(max(0.0, min(100.0, float(self._read_brake_percent())))))
+        """Read and clamp the current brake percentage value."""
+        return clamp_int(int(round(float(self._read_brake_percent()))), 0, AXIS_MAX)
 
     def _regenerate_random_trace(self, status_text: Optional[str] = None, *, auto_restart: bool = False) -> None:
         self._ensure_random_selected()
@@ -361,10 +410,11 @@ class StaticBrakeTab(QWidget):
             self._begin_attempt(status="Random target regenerated. Auto-recording armed.")
 
     def _apply_trace(self, trace: BrakeTrace, *, status_text: Optional[str] = None) -> None:
+        """Apply a trace to the chart and reset state."""
         normalized = self._normalize_trace(trace, force_end_zero=self._is_random_selected())
         length = len(normalized.points)
         self._timer.stop()
-        self._state = StaticBrakeState(
+        self._state = _StaticBrakeState(
             trace=normalized,
             user_points=[0] * length,
             cursor=0,
@@ -377,13 +427,14 @@ class StaticBrakeTab(QWidget):
         self._set_start_button_text()
         self._set_watermark_percent(0)
         if status_text:
-            self.status.setText(status_text)
+            self._status_label.setText(status_text)
 
     def _random_length(self) -> int:
+        """Get the target length for random traces from the slider."""
         try:
-            return max(20, min(500, int(self.length_slider.value())))
+            return max(MIN_TRACE_LENGTH, min(MAX_TRACE_LENGTH, int(self._length_slider.value())))
         except Exception:
-            return 150
+            return DEFAULT_TRACE_LENGTH
 
     def _normalize_trace(self, trace: BrakeTrace, *, force_end_zero: bool = False) -> BrakeTrace:
         points = list(trace.points) or [0]
@@ -393,18 +444,20 @@ class StaticBrakeTab(QWidget):
         return BrakeTrace(trace.name, points)
 
     def _is_random_selected(self) -> bool:
-        data = self.trace_combo.currentData()
+        """Check if the random trace option is selected."""
+        data = self._trace_combo.currentData()
         return bool(data) and data[0] == "random"
 
     def _ensure_random_selected(self) -> None:
+        """Ensure the random trace option is selected in the combo box."""
         if self._is_random_selected():
             return
-        for i in range(self.trace_combo.count()):
-            data = self.trace_combo.itemData(i)
+        for i in range(self._trace_combo.count()):
+            data = self._trace_combo.itemData(i)
             if data and data[0] == "random":
-                self.trace_combo.blockSignals(True)
-                self.trace_combo.setCurrentIndex(i)
-                self.trace_combo.blockSignals(False)
+                self._trace_combo.blockSignals(True)
+                self._trace_combo.setCurrentIndex(i)
+                self._trace_combo.blockSignals(False)
                 break
 
     def save_trace_as(self) -> None:
@@ -414,15 +467,15 @@ class StaticBrakeTab(QWidget):
             return
         name = (name or "").strip()
         if not name:
-            self.status.setText("Save canceled: empty name.")
+            self._status_label.setText("Save canceled: empty name.")
             return
         try:
             save_static_brake_trace(name, self._state.user_points)
             self._custom = load_static_brake_traces()
             self._populate_traces()
-            self.status.setText(f"Saved trace '{name}'.")
+            self._status_label.setText(f"Saved trace '{name}'.")
         except Exception as exc:
-            self.status.setText(f"Save failed: {exc}")
+            self._status_label.setText(f"Save failed: {exc}")
 
     def import_trace(self) -> None:
         """Import a brake trace from a JSON file."""
@@ -441,13 +494,13 @@ class StaticBrakeTab(QWidget):
             save_static_brake_trace(name, [int(x) for x in points])
             self._custom = load_static_brake_traces()
             self._populate_traces()
-            self.status.setText(f"Imported trace '{name}'.")
+            self._status_label.setText(f"Imported trace '{name}'.")
         except Exception as exc:
-            self.status.setText(f"Import failed: {exc}")
+            self._status_label.setText(f"Import failed: {exc}")
 
     def export_trace(self) -> None:
         """Export the currently selected trace to a JSON file."""
-        data = self.trace_combo.currentData() or ("preset", self._state.trace.name)
+        data = self._trace_combo.currentData() or ("preset", self._state.trace.name)
         kind, name = data
         trace = self._state.trace
         default = f"{trace.name}.json"
@@ -458,9 +511,9 @@ class StaticBrakeTab(QWidget):
         try:
             payload = {"name": trace.name, "points": trace.points, "kind": kind, "selected": name}
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            self.status.setText(f"Exported to {path}.")
+            self._status_label.setText(f"Exported to {path}.")
         except Exception as exc:
-            self.status.setText(f"Export failed: {exc}")
+            self._status_label.setText(f"Export failed: {exc}")
 
     def _rebuild_default_trace_if_needed(self) -> None:
         if self._is_random_selected():
@@ -469,14 +522,16 @@ class StaticBrakeTab(QWidget):
             self._update_axes(length=self._current_trace_length())
 
     def _on_length_changed(self, value: int) -> None:
-        self.length_value.setText(str(int(value)))
+        """Handle length slider value change."""
+        self._length_value_label.setText(str(int(value)))
         self._rebuild_default_trace_if_needed()
 
     def _begin_attempt(self, status: Optional[str] = None) -> None:
+        """Begin a new recording attempt."""
         trace = self._state.trace
         points = [0] * len(trace.points)
         cursor = 1 if points else 0  # keep index 0 pinned at zero
-        self._state = StaticBrakeState(
+        self._state = _StaticBrakeState(
             trace=trace,
             user_points=points,
             cursor=cursor,
@@ -488,12 +543,13 @@ class StaticBrakeTab(QWidget):
         self._timer.start()
         self._set_start_button_text()
         if status:
-            self.status.setText(status)
+            self._status_label.setText(status)
 
     def _stop_current_attempt(self, status: Optional[str] = None) -> None:
+        """Stop the current recording attempt."""
         self._timer.stop()
         trace = self._state.trace
-        self._state = StaticBrakeState(
+        self._state = _StaticBrakeState(
             trace=trace,
             user_points=[0] * len(trace.points),
             cursor=0,
@@ -504,20 +560,23 @@ class StaticBrakeTab(QWidget):
         self._set_watermark_percent(0)
         self._set_start_button_text()
         if status:
-            self.status.setText(status)
+            self._status_label.setText(status)
 
     def _set_start_button_text(self) -> None:
+        """Update the start button text based on loop state."""
         if self._loop_active:
-            self.start_btn.setText("Stop auto")
+            self._start_btn.setText("Stop auto")
         else:
-            self.start_btn.setText("Start auto")
+            self._start_btn.setText("Start auto")
 
     def _set_watermark_percent(self, value: int) -> None:
+        """Update the watermark display with the current brake percentage."""
         try:
-            self.chart_view.set_watermark_text(f"{int(value)}")
-            self.chart_view.set_watermark_visible(self.watermark_checkbox.isChecked())
+            self._chart_view.set_watermark_text(f"{int(value)}")
+            self._chart_view.set_watermark_visible(self._watermark_checkbox.isChecked())
         except Exception:
             pass
 
     def _on_watermark_toggled(self, state: int) -> None:
-        self.chart_view.set_watermark_visible(bool(state))
+        """Handle watermark checkbox toggle."""
+        self._chart_view.set_watermark_visible(bool(state))
