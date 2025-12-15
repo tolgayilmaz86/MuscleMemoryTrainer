@@ -1268,17 +1268,18 @@ class SettingsTab(QWidget):
     # -------------------------------------------------------------------------
 
     def calibrate_steering_range(self) -> None:
-        """Calibrate steering by capturing center, left, and right positions."""
+        """Calibrate steering by capturing center, left, and right positions.
+        
+        Auto-detects byte offset and bit depth by analyzing which bytes change.
+        """
         if not self._wheel_session.is_open:
             self._set_status("Wheel not connected. Click Connect first.")
             return
-        if self._steering_offset.value() >= self._wheel_report_len.value():
-            self._set_status("Invalid steering offset. Check advanced settings.")
-            return
 
-        self._steering_center_samples = []
-        self._steering_left_samples = []
-        self._steering_right_samples = []
+        # Store raw HID reports for auto-detection
+        self._steering_center_reports: list[bytes] = []
+        self._steering_left_reports: list[bytes] = []
+        self._steering_right_reports: list[bytes] = []
         self._steering_pending_stage = "center"
 
         dlg = QDialog(self)
@@ -1337,11 +1338,11 @@ class SettingsTab(QWidget):
         }
 
         if stage == "center":
-            self._steering_center_samples = []
+            self._steering_center_reports = []
         elif stage == "left":
-            self._steering_left_samples = []
+            self._steering_left_reports = []
         else:
-            self._steering_right_samples = []
+            self._steering_right_reports = []
 
         self._set_steering_dialog_text(stage_texts.get(stage, ""))
         if self._steering_cal_start_btn:
@@ -1404,84 +1405,161 @@ class SettingsTab(QWidget):
         self._steering_cal_start_btn = None
 
     def _capture_steering_calibration_sample(self) -> None:
-        """Capture a steering sample during calibration."""
+        """Capture raw HID report during steering calibration for auto-detection."""
         if not self._wheel_session.is_open or not self._steering_cal_stage:
             return
 
+        # Read with max length (64 bytes) to capture full report for auto-detection
+        # This allows detecting steering data at any offset
         report = self._wheel_session.read_latest_report(
-            report_len=self._wheel_report_len.value(),
+            report_len=64,
             max_reads=MAX_READS_PER_TICK,
         )
         if not report:
             return
 
-        s_off = self._steering_offset.value()
-        bits = self._steering_bits.currentData()
-        
-        if bits == 32:
-            # 32-bit signed little-endian
-            if s_off + 3 >= len(report):
-                return
-            raw = report[s_off] | (report[s_off + 1] << 8) | (report[s_off + 2] << 16) | (report[s_off + 3] << 24)
-            # Convert to signed
-            value = raw if raw < 0x80000000 else raw - 0x100000000
-        elif bits == 16:
-            # 16-bit little-endian
-            if s_off + 1 >= len(report):
-                return
-            value = report[s_off] | (report[s_off + 1] << 8)
-        else:
-            # 8-bit
-            if s_off >= len(report):
-                return
-            value = int(report[s_off])
-        
+        # Store the full raw report for auto-detection analysis
         if self._steering_cal_stage == "center":
-            self._steering_center_samples.append(value)
+            self._steering_center_reports.append(bytes(report))
         elif self._steering_cal_stage == "left":
-            self._steering_left_samples.append(value)
+            self._steering_left_reports.append(bytes(report))
         elif self._steering_cal_stage == "right":
-            self._steering_right_samples.append(value)
+            self._steering_right_reports.append(bytes(report))
 
     def _finish_steering_range_calibration(self) -> None:
-        """Complete steering calibration using captured center, left, and right positions."""
+        """Complete steering calibration with auto-detection of offset and bit depth."""
         self._steering_cal_timer.stop()
         self._steering_cal_stage = None
 
-        if not self._steering_center_samples or not self._steering_left_samples or not self._steering_right_samples:
+        if not self._steering_center_reports or not self._steering_left_reports or not self._steering_right_reports:
             self._set_status("Calibration failed: not enough data captured.")
             return
 
-        # Get average of center, left and right positions
-        center_avg = sum(self._steering_center_samples) / len(self._steering_center_samples)
-        left_avg = sum(self._steering_left_samples) / len(self._steering_left_samples)
-        right_avg = sum(self._steering_right_samples) / len(self._steering_right_samples)
-        
-        # Debug: show min/max to detect erratic values
-        center_min, center_max = min(self._steering_center_samples), max(self._steering_center_samples)
-        left_min, left_max = min(self._steering_left_samples), max(self._steering_left_samples)
-        right_min, right_max = min(self._steering_right_samples), max(self._steering_right_samples)
-        
-        # Center is the captured center position (not computed midpoint)
-        center = int(center_avg)
-        
-        # Half-range is the larger of the two distances from center to extremes
-        # This handles asymmetric wheels correctly
-        left_distance = abs(center_avg - left_avg)
-        right_distance = abs(right_avg - center_avg)
-        half_range = int(max(left_distance, right_distance))
-        # Ensure a minimum to avoid division by zero
-        half_range = max(half_range, 100)
+        # Update report length from actual captured data
+        actual_report_len = len(self._steering_center_reports[0])
+        self._wheel_report_len.setValue(actual_report_len)
 
+        # Auto-detect steering byte offset and bit depth
+        detected = self._detect_steering_parameters(
+            self._steering_center_reports,
+            self._steering_left_reports,
+            self._steering_right_reports,
+        )
+        
+        if detected is None:
+            self._set_status("Calibration failed: could not detect steering axis. Try turning wheel more.")
+            return
+        
+        offset, bits, center, half_range = detected
+        
+        # Update UI with detected values
+        self._steering_offset.setValue(offset)
+        bits_index = {8: 0, 16: 1, 32: 2}.get(bits, 1)
+        self._steering_bits.setCurrentIndex(bits_index)
+        
         self._steering_center = center
         self._steering_half_range = half_range
         self._update_steering_calibration_label()
 
         try:
             self.save_current_mapping()
-            self._set_status(f"Steering calibrated. Center: {center}, Half-range: {half_range}")
+            self._set_status(f"Detected: offset {offset}, {bits}-bit. Center: {center}")
         except Exception:
-            self._set_status(f"Calibration complete (center={center}, range={half_range}). Click Save to persist.")
+            self._set_status(f"Detected: offset {offset}, {bits}-bit. Click Save to persist.")
+
+    def _detect_steering_parameters(
+        self,
+        center_reports: list[bytes],
+        left_reports: list[bytes],
+        right_reports: list[bytes],
+    ) -> tuple[int, int, int, int] | None:
+        """Auto-detect steering byte offset, bit depth, center, and half-range.
+        
+        Analyzes which bytes change between center/left/right positions to find
+        the steering data location and format.
+        
+        Returns:
+            Tuple of (offset, bits, center, half_range) or None if detection fails.
+        """
+        if not center_reports or not left_reports or not right_reports:
+            return None
+        
+        report_len = len(center_reports[0])
+        if report_len < 2:
+            return None
+        
+        # Helper to read values at different bit depths
+        def read_value(report: bytes, offset: int, bits: int) -> int | None:
+            if bits == 32 and offset + 4 <= len(report):
+                raw = report[offset] | (report[offset + 1] << 8) | (report[offset + 2] << 16) | (report[offset + 3] << 24)
+                return raw if raw < 0x80000000 else raw - 0x100000000
+            elif bits == 16 and offset + 2 <= len(report):
+                return report[offset] | (report[offset + 1] << 8)
+            elif bits == 8 and offset + 1 <= len(report):
+                return report[offset]
+            return None
+        
+        # Try each bit depth and offset, measure how well values separate left/center/right
+        best_offset = None
+        best_bits = None
+        best_range = 0
+        
+        for bits in [32, 16, 8]:
+            num_bytes = bits // 8
+            for offset in range(report_len - num_bytes + 1):
+                # Read values for all samples at this offset/bits combo
+                center_vals = [read_value(r, offset, bits) for r in center_reports]
+                left_vals = [read_value(r, offset, bits) for r in left_reports]
+                right_vals = [read_value(r, offset, bits) for r in right_reports]
+                
+                # Skip if any reads failed
+                if None in center_vals or None in left_vals or None in right_vals:
+                    continue
+                
+                # Compute averages
+                center_avg = sum(center_vals) / len(center_vals)
+                left_avg = sum(left_vals) / len(left_vals)
+                right_avg = sum(right_vals) / len(right_vals)
+                
+                # The steering axis should have large difference between left and right
+                total_range = abs(right_avg - left_avg)
+                
+                # Skip if range is too small (not the steering axis)
+                if total_range < 50:
+                    continue
+                
+                # Check that center is roughly between left and right (with tolerance)
+                min_val = min(left_avg, right_avg)
+                max_val = max(left_avg, right_avg)
+                margin = total_range * 0.3  # 30% tolerance
+                center_in_range = (min_val - margin) <= center_avg <= (max_val + margin)
+                
+                if not center_in_range:
+                    continue
+                
+                # Prefer larger ranges (steering has the largest range typically)
+                if total_range > best_range:
+                    best_range = total_range
+                    best_offset = offset
+                    best_bits = bits
+        
+        if best_offset is None or best_bits is None:
+            return None
+        
+        # Compute final values using detected format
+        center_vals = [read_value(r, best_offset, best_bits) for r in center_reports]
+        left_vals = [read_value(r, best_offset, best_bits) for r in left_reports]
+        right_vals = [read_value(r, best_offset, best_bits) for r in right_reports]
+        
+        center_val = int(sum(center_vals) / len(center_vals))
+        left_val = int(sum(left_vals) / len(left_vals))
+        right_val = int(sum(right_vals) / len(right_vals))
+        
+        # Half-range is the larger distance from center to extremes
+        half_range = max(abs(center_val - left_val), abs(right_val - center_val))
+        half_range = max(half_range, 100)  # Minimum to avoid division by zero
+        
+        return (best_offset, best_bits, center_val, half_range)
 
     def _update_steering_calibration_label(self) -> None:
         """Refresh the steering center/range label in settings."""

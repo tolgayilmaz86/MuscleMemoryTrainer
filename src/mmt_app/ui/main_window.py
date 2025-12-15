@@ -34,6 +34,7 @@ from .utils import (
 # Steering smoothing constants
 _STEERING_SMOOTHING_ALPHA = 0.15
 _STEERING_DEADBAND_PERCENT = 3.0
+_STEERING_SPIKE_THRESHOLD = 50.0  # Reject changes > 50% as noise/spikes
 
 # UI defaults
 _DEFAULT_UPDATE_RATE_HZ = 20
@@ -463,11 +464,24 @@ class MainWindow(QMainWindow):
         return normalized * 100.0
 
     def _smooth_steering(self, raw: float, prev: float) -> float:
-        """Lightly low-pass filter steering to avoid spiky traces."""
+        """Low-pass filter steering with spike rejection to avoid erratic traces.
+        
+        Rejects sudden large changes (> 50%) as noise/spikes since a physical
+        wheel cannot move that fast between samples.
+        """
         raw = clamp(raw, -100.0, 100.0)
         delta = raw - prev
+        
+        # Spike filter: reject physically impossible sudden jumps
+        # A wheel can't move > 50% of its range in one sample period (~20ms)
+        if abs(delta) > _STEERING_SPIKE_THRESHOLD:
+            return prev
+        
+        # Deadband: ignore very small changes
         if abs(delta) < self._steering_deadband:
             return prev
+        
+        # Smooth the value
         smoothed = prev + self._steering_alpha * delta
         return clamp(smoothed, -100.0, 100.0)
 
