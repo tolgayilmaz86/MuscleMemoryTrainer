@@ -313,14 +313,11 @@ class SettingsTab(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
-        apply_btn = QPushButton("Apply")
-        apply_btn.clicked.connect(self.apply_device_selection)
-
         save_btn = QPushButton("Save")
         save_btn.clicked.connect(self.save_current_mapping)
-
-        btn_row.addWidget(apply_btn)
         btn_row.addWidget(save_btn)
+
+        btn_row.addStretch()
 
         layout.addLayout(btn_row)
 
@@ -339,15 +336,19 @@ class SettingsTab(QWidget):
         self._wheel_device_combo.setMinimumWidth(280)
         form.addRow("Wheel HID:", self._wheel_device_combo)
 
-        # Refresh button row
+        # Button row: Refresh and Connect
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
 
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_devices)
-
         btn_layout.addWidget(refresh_btn)
+
+        connect_btn = QPushButton("Connect")
+        connect_btn.clicked.connect(self.connect_devices)
+        btn_layout.addWidget(connect_btn)
+
         btn_layout.addStretch()
 
         form.addRow("", btn_row)
@@ -464,14 +465,14 @@ class SettingsTab(QWidget):
         group = QGroupBox("Target Sounds")
         form = QFormLayout(group)
 
-        form.addRow("Throttle:", self._build_sound_row(kind="throttle", label="Throttle"))
+        form.addRow("Throttle:  ", self._build_sound_row(kind="throttle", label="Throttle"))
         form.addRow("Brake:", self._build_sound_row(kind="brake", label="Brake"))
 
         return group
 
     def _build_sound_row(self, *, kind: str, label: str) -> QWidget:
         """Construct a row with path display, browse button, and enable checkbox."""
-        checkbox = QCheckBox(f"Play {label.lower()}")
+        checkbox = QCheckBox("Activate")
         checkbox.setChecked(True)
         checkbox.stateChanged.connect(self._schedule_save_ui_settings)
         self._sound_checkboxes[kind] = checkbox
@@ -483,7 +484,15 @@ class SettingsTab(QWidget):
         line_edit.textChanged.connect(self._schedule_save_ui_settings)
         self._sound_files[kind] = line_edit
 
-        browse_btn = QPushButton("Browse…")
+        browse_btn = QPushButton("📂")
+        browse_btn.setToolTip("Browse for sound file")
+        browse_btn.setFlat(True)
+        browse_btn.setStyleSheet(
+            "QPushButton { font-size: 24px; background: transparent; border: none; padding: 0px; }"
+            "QPushButton:hover { background: transparent; }"
+            "QPushButton:pressed { background: transparent; }"
+        )
+        browse_btn.setCursor(Qt.PointingHandCursor)
         browse_btn.clicked.connect(lambda: self._browse_sound_file(kind))
 
         row = QWidget()
@@ -643,7 +652,7 @@ class SettingsTab(QWidget):
             combo.addItem(label, idx)
         combo.blockSignals(False)
 
-    def apply_device_selection(self) -> None:
+    def connect_devices(self) -> None:
         """Open/close HID sessions based on current combo selections."""
         # Close existing sessions
         self._pedals_session.close()
@@ -743,9 +752,9 @@ class SettingsTab(QWidget):
 
         self._update_steering_calibration_label()
 
-        # Auto-apply if devices found
+        # Auto-connect if devices found
         if pedals_cfg or wheel_cfg:
-            self.apply_device_selection()
+            self.connect_devices()
 
     def _select_device_by_vid_pid(
         self, combo: QComboBox, vid: int, pid: int
@@ -949,7 +958,7 @@ class SettingsTab(QWidget):
     def _start_input_setup_wizard(self) -> None:
         """Start the comprehensive input setup wizard."""
         if not self._pedals_session.is_open and not self._wheel_session.is_open:
-            self._set_status("Select pedals and/or wheel HID device first, then click Apply.")
+            self._set_status("Select pedals and/or wheel HID device first, then click Connect.")
             return
         if self._calibration_device or self._calibration_axis:
             self._set_status("Calibration already running. Please wait.")
@@ -1365,7 +1374,7 @@ class SettingsTab(QWidget):
     def _set_steering_center_from_wheel(self) -> None:
         """Read current steering position from wheel and set as center."""
         if not self._wheel_session.is_open:
-            self._set_status("Wheel not connected. Apply device selection first.")
+            self._set_status("Wheel not connected. Click Connect in Device Selection first.")
             return
 
         report = self._wheel_session.read_latest_report(
