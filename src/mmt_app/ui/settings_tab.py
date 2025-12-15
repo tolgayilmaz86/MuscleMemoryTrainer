@@ -237,6 +237,10 @@ class SettingsTab(QWidget):
         """Initialize calibration-related state variables."""
         self._calibration_state = CalibrationState()
         self._pending_pedal_wizard: list[str] = []
+        # Active calibration tracking
+        self._calibration_device: str | None = None
+        self._calibration_axis: str | None = None
+        self._calibration_callback: Callable | None = None
         # Setup wizard state
         self._setup_wizard_dialog: QDialog | None = None
         self._setup_wizard_label: QLabel | None = None
