@@ -108,6 +108,7 @@ class SettingsTab(QWidget):
         on_grid_step_changed: Callable[[int], None] | None = None,
         on_update_rate_changed: Callable[[int], None] | None = None,
         on_steering_visible_changed: Callable[[bool], None] | None = None,
+        on_watermark_visible_changed: Callable[[bool], None] | None = None,
     ) -> None:
         """Initialize the settings tab.
 
@@ -118,6 +119,7 @@ class SettingsTab(QWidget):
             on_grid_step_changed: Callback when grid step changes.
             on_update_rate_changed: Callback when update rate changes.
             on_steering_visible_changed: Callback when steering visibility changes.
+            on_watermark_visible_changed: Callback when watermark visibility changes.
         """
         super().__init__(parent)
 
@@ -127,6 +129,7 @@ class SettingsTab(QWidget):
         self._on_grid_step_changed = on_grid_step_changed or (lambda _: None)
         self._on_update_rate_changed = on_update_rate_changed or (lambda _: None)
         self._on_steering_visible_changed = on_steering_visible_changed or (lambda _: None)
+        self._on_watermark_visible_changed = on_watermark_visible_changed or (lambda _: None)
 
         # HID device sessions and state
         self._devices: list[HidDeviceInfo] = []
@@ -205,6 +208,11 @@ class SettingsTab(QWidget):
     def show_steering(self) -> bool:
         """Return whether steering trace should be visible."""
         return self._show_steering_checkbox.isChecked()
+
+    @property
+    def show_watermark(self) -> bool:
+        """Return whether watermark should be visible on charts."""
+        return self._show_watermark_checkbox.isChecked()
 
     @property
     def throttle_target(self) -> int:
@@ -594,6 +602,13 @@ class SettingsTab(QWidget):
         self._show_steering_checkbox.stateChanged.connect(self._on_steering_visible_changed_internal)
         self._show_steering_checkbox.stateChanged.connect(self._schedule_save_ui_settings)
         form.addRow("", self._show_steering_checkbox)
+
+        # Show watermark checkbox
+        self._show_watermark_checkbox = QCheckBox("Show braking watermark on charts")
+        self._show_watermark_checkbox.setChecked(True)
+        self._show_watermark_checkbox.stateChanged.connect(self._on_watermark_visible_changed_internal)
+        self._show_watermark_checkbox.stateChanged.connect(self._schedule_save_ui_settings)
+        form.addRow("", self._show_watermark_checkbox)
 
         return group
 
@@ -1474,6 +1489,11 @@ class SettingsTab(QWidget):
         visible = state == Qt.Checked.value
         self._on_steering_visible_changed(visible)
 
+    def _on_watermark_visible_changed_internal(self, state: int) -> None:
+        """Handle watermark visibility checkbox changes."""
+        visible = state == Qt.Checked.value
+        self._on_watermark_visible_changed(visible)
+
     def _on_targets_changed_internal(self) -> None:
         """Handle throttle/brake target slider changes."""
         self._on_targets_changed()
@@ -1504,6 +1524,13 @@ class SettingsTab(QWidget):
             self._show_steering_checkbox.blockSignals(True)
             self._show_steering_checkbox.setChecked(visible)
             self._show_steering_checkbox.blockSignals(False)
+
+    def set_show_watermark(self, visible: bool, *, update_checkbox: bool = False) -> None:
+        """Set watermark visibility and optionally sync the checkbox."""
+        if update_checkbox:
+            self._show_watermark_checkbox.blockSignals(True)
+            self._show_watermark_checkbox.setChecked(visible)
+            self._show_watermark_checkbox.blockSignals(False)
 
     def set_throttle_target(self, value: int) -> None:
         """Set the throttle target percentage."""
@@ -1538,13 +1565,14 @@ class SettingsTab(QWidget):
         self._ui_save_timer.start(_UI_SAVE_DEBOUNCE_MS)
 
     def _save_ui_settings(self) -> None:
-        """Persist UI-related settings (targets, grid, sounds, update rate, steering visibility)."""
+        """Persist UI-related settings (targets, grid, sounds, update rate, steering/watermark visibility)."""
         cfg = UiConfig(
             throttle_target=self._throttle_target_slider.value(),
             brake_target=self._brake_target_slider.value(),
             grid_step_percent=self._grid_step_slider.value(),
             update_hz=self._update_rate_slider.value(),
             show_steering=self._show_steering_checkbox.isChecked(),
+            show_watermark=self._show_watermark_checkbox.isChecked(),
             throttle_sound_enabled=self.sound_enabled("throttle"),
             throttle_sound_path=self.resolve_sound_path("throttle"),
             brake_sound_enabled=self.sound_enabled("brake"),

@@ -82,6 +82,7 @@ class MainWindow(QMainWindow):
         """Initialize UI configuration state."""
         self._update_rate = _DEFAULT_UPDATE_RATE_HZ
         self._show_steering = False
+        self._show_watermark = True
         self._steering_alpha = _STEERING_SMOOTHING_ALPHA
         self._steering_deadband = _STEERING_DEADBAND_DEGREES
 
@@ -109,6 +110,7 @@ class MainWindow(QMainWindow):
             on_grid_step_changed=self._on_settings_grid_step_changed,
             on_update_rate_changed=self._on_settings_update_rate_changed,
             on_steering_visible_changed=self._on_settings_steering_visible_changed,
+            on_watermark_visible_changed=self._on_settings_watermark_visible_changed,
         )
 
         # Create telemetry tab
@@ -117,12 +119,13 @@ class MainWindow(QMainWindow):
         self._telemetry_tab.connect_reset(self._on_telemetry_reset)
         
         self._active_brake_tab = ActiveBrakeTab(read_brake_percent=self._read_brake_for_active_tab)
+        self._trail_brake_tab = TrailBrakeTab(read_brake_percent=self._read_brake_for_static_tab)
 
         self._about_tab = AboutTab(app_name=self._app_name, version=self._version)
 
         tabs = QTabWidget()
         tabs.addTab(self._telemetry_tab, "Telemetry")
-        tabs.addTab(TrailBrakeTab(read_brake_percent=self._read_brake_for_static_tab), "Trail Brake")
+        tabs.addTab(self._trail_brake_tab, "Trail Brake")
         tabs.addTab(self._active_brake_tab, "Active Brake")
         tabs.addTab(self._settings_tab, "Settings")
         tabs.addTab(self._about_tab, "About")
@@ -179,6 +182,10 @@ class MainWindow(QMainWindow):
         """Handle steering visibility changes from SettingsTab."""
         self._set_show_steering(visible, update_checkbox=True)
 
+    def _on_settings_watermark_visible_changed(self, visible: bool) -> None:
+        """Handle watermark visibility changes from SettingsTab."""
+        self._set_show_watermark(visible, update_checkbox=True)
+
     # -------------------------------------------------------------------------
     # Core functionality
     # -------------------------------------------------------------------------
@@ -229,6 +236,16 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_telemetry_tab"):
             self._telemetry_tab.set_steering_visible(self._show_steering)
 
+    def _set_show_watermark(self, visible: bool, *, update_checkbox: bool = False) -> None:
+        """Apply watermark visibility to all charts."""
+        self._show_watermark = bool(visible)
+        if hasattr(self, "_telemetry_tab"):
+            self._telemetry_tab.set_watermark_visible(self._show_watermark)
+        if hasattr(self, "_trail_brake_tab"):
+            self._trail_brake_tab.set_watermark_visible(self._show_watermark)
+        if hasattr(self, "_active_brake_tab"):
+            self._active_brake_tab.set_watermark_visible(self._show_watermark)
+
     def _set_grid_step(self, step_percent: int) -> None:
         """Set the telemetry grid step, snapping to 10% increments."""
         step_percent = max(10, min(50, (step_percent // 10) * 10))
@@ -243,6 +260,7 @@ class MainWindow(QMainWindow):
             grid_step_percent=self._settings_tab.grid_step,
             update_hz=self._update_rate,
             show_steering=self._show_steering,
+            show_watermark=self._show_watermark,
             throttle_sound_enabled=self._settings_tab.sound_enabled("throttle"),
             throttle_sound_path=self._settings_tab.resolve_sound_path("throttle"),
             brake_sound_enabled=self._settings_tab.sound_enabled("brake"),
@@ -267,6 +285,8 @@ class MainWindow(QMainWindow):
                 self._telemetry_tab.set_grid_step(ui_cfg.grid_step_percent)
                 self._set_update_rate(ui_cfg.update_hz)
                 self._set_show_steering(ui_cfg.show_steering)
+                self._set_show_watermark(ui_cfg.show_watermark)
+                self._settings_tab.set_show_watermark(ui_cfg.show_watermark, update_checkbox=True)
                 self._settings_tab.apply_sound_settings(
                     throttle_enabled=ui_cfg.throttle_sound_enabled,
                     throttle_path=ui_cfg.throttle_sound_path,
@@ -277,9 +297,11 @@ class MainWindow(QMainWindow):
             else:
                 self._set_update_rate(self._update_rate)
                 self._set_show_steering(self._show_steering)
+                self._set_show_watermark(self._show_watermark)
         except Exception:
             self._set_update_rate(self._update_rate)
             self._set_show_steering(self._show_steering)
+            self._set_show_watermark(self._show_watermark)
 
     def _update_status(self) -> None:
         """Update the status bar with current device usage."""

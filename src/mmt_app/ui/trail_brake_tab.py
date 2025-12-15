@@ -104,9 +104,6 @@ class TrailBrakeTab(QWidget):
         self._regen_btn.clicked.connect(self._regenerate_random_trace)
         self._auto_regen_checkbox = QCheckBox("Auto Generate")
         self._auto_regen_checkbox.setChecked(True)
-        self._watermark_checkbox = QCheckBox("Show watermark")
-        self._watermark_checkbox.setChecked(True)
-        self._watermark_checkbox.stateChanged.connect(self._on_watermark_toggled)
         self._save_btn = QPushButton("Save trace")
         self._save_btn.clicked.connect(self.save_trace_as)
         self._import_btn = QPushButton("Import trace")
@@ -116,6 +113,7 @@ class TrailBrakeTab(QWidget):
 
         self._chart, self._series_target, self._series_user, self._axis_x, self._axis_y = self._create_chart()
         self._chart_view = WatermarkChartView(self._chart)
+        self._watermark_visible = True  # Track watermark visibility
 
         form = QFormLayout()
         form.addRow("Brake trace", self._trace_combo)
@@ -126,7 +124,6 @@ class TrailBrakeTab(QWidget):
         buttons.addWidget(self._reset_btn)
         buttons.addWidget(self._regen_btn)
         buttons.addWidget(self._auto_regen_checkbox)
-        buttons.addWidget(self._watermark_checkbox)
         buttons.addStretch()
         buttons.addWidget(self._save_btn)
         buttons.addWidget(self._import_btn)
@@ -162,7 +159,7 @@ class TrailBrakeTab(QWidget):
         self._render_user()
         self._set_start_button_text()
         self._set_watermark_percent(0)
-        self._chart_view.set_watermark_visible(self._watermark_checkbox.isChecked())
+        self._chart_view.set_watermark_visible(self._watermark_visible)
 
     @staticmethod
     def _create_slider_row(slider: QSlider, label: QLabel) -> QWidget:
@@ -573,10 +570,11 @@ class TrailBrakeTab(QWidget):
         """Update the watermark display with the current brake percentage."""
         try:
             self._chart_view.set_watermark_text(f"{int(value)}")
-            self._chart_view.set_watermark_visible(self._watermark_checkbox.isChecked())
+            self._chart_view.set_watermark_visible(self._watermark_visible)
         except Exception:
             pass
 
-    def _on_watermark_toggled(self, state: int) -> None:
-        """Handle watermark checkbox toggle."""
-        self._chart_view.set_watermark_visible(bool(state))
+    def set_watermark_visible(self, visible: bool) -> None:
+        """Set watermark visibility (called from settings)."""
+        self._watermark_visible = visible
+        self._chart_view.set_watermark_visible(visible)

@@ -81,9 +81,6 @@ class ActiveBrakeTab(QWidget):
         self._reset_btn = QPushButton("Reset")
         self._reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         self._reset_btn.clicked.connect(self.reset)
-        self._watermark_checkbox = QCheckBox("Show watermark")
-        self._watermark_checkbox.setChecked(True)
-        self._watermark_checkbox.stateChanged.connect(self._on_watermark_toggled)
 
         (
             self._chart,
@@ -94,9 +91,7 @@ class ActiveBrakeTab(QWidget):
             self._axis_y,
         ) = self._create_chart()
         self._chart_view = WatermarkChartView(self._chart)
-
-        controls = QFormLayout()
-        controls.addRow("Watermark", self._watermark_checkbox)
+        self._watermark_visible = True  # Track watermark visibility
 
         buttons = QHBoxLayout()
         buttons.addStretch()
@@ -105,12 +100,11 @@ class ActiveBrakeTab(QWidget):
         buttons.addStretch()
 
         layout = QVBoxLayout()
-        layout.addLayout(controls)
         layout.addLayout(buttons)
         layout.addWidget(self._chart_view, stretch=1)
         layout.addWidget(self._status_label)
         self.setLayout(layout)
-        self._chart_view.set_watermark_visible(self._watermark_checkbox.isChecked())
+        self._chart_view.set_watermark_visible(self._watermark_visible)
 
     def _init_state(self) -> None:
         """Initialize application state."""
@@ -366,13 +360,14 @@ class ActiveBrakeTab(QWidget):
         """Update the watermark display with the current brake percentage."""
         try:
             self._chart_view.set_watermark_text(f"{int(round(value))}")
-            self._chart_view.set_watermark_visible(self._watermark_checkbox.isChecked())
+            self._chart_view.set_watermark_visible(self._watermark_visible)
         except Exception:
             pass
 
-    def _on_watermark_toggled(self, state: int) -> None:
-        """Handle watermark checkbox toggle."""
-        self._chart_view.set_watermark_visible(bool(state))
+    def set_watermark_visible(self, visible: bool) -> None:
+        """Set watermark visibility (called from settings)."""
+        self._watermark_visible = visible
+        self._chart_view.set_watermark_visible(visible)
 
     def set_update_rate(self, hz: int) -> None:
         """Adjust timer interval for how often the active brake chart ticks."""

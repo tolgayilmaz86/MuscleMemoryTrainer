@@ -63,6 +63,7 @@ class TelemetryTab(QWidget):
         self._is_streaming = False
         self._throttle_target = 60
         self._brake_target = 40
+        self._watermark_visible = True
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -86,6 +87,9 @@ class TelemetryTab(QWidget):
         # Telemetry chart
         self._chart = TelemetryChart(max_points=_DEFAULT_MAX_CHART_POINTS)
         self._apply_grid_step(_DEFAULT_GRID_STEP)
+        # Initialize watermark with default value
+        self._chart.set_watermark_text("0")
+        self._chart.set_watermark_visible(self._watermark_visible)
 
         # Progress bar labels
         self._throttle_bar_label = QLabel("0%")
@@ -168,6 +172,11 @@ class TelemetryTab(QWidget):
         """Set whether the steering trace is visible."""
         self._chart.set_steering_visible(visible)
 
+    def set_watermark_visible(self, visible: bool) -> None:
+        """Set whether the watermark is visible."""
+        self._watermark_visible = visible
+        self._chart.set_watermark_visible(visible)
+
     def set_streaming(self, streaming: bool) -> None:
         """Set the streaming state and update the UI."""
         self._is_streaming = streaming
@@ -235,13 +244,15 @@ class TelemetryTab(QWidget):
         self._chart.set_grid_step(step_percent=step)
 
     def _update_bars(self, sample: "TelemetrySample") -> None:
-        """Update the vertical bar indicators."""
+        """Update the vertical bar indicators and watermark."""
         throttle_val = int(clamp(sample.throttle, 0.0, 100.0))
         brake_val = int(clamp(sample.brake, 0.0, 100.0))
         self._throttle_bar.setValue(throttle_val)
         self._brake_bar.setValue(brake_val)
         self._throttle_bar_label.setText(f"{throttle_val}%")
         self._brake_bar_label.setText(f"{brake_val}%")
+        # Update watermark with brake value (primary focus for muscle memory)
+        self._chart.set_watermark_text(f"{brake_val}")
 
     def _create_vertical_progress_bar(self, object_name: str) -> QProgressBar:
         """Create a vertical progress bar for input visualization."""

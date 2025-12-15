@@ -6,6 +6,7 @@ from PySide6.QtGui import QPainter, QPen, QColor
 
 from ..telemetry import TelemetrySample
 from .utils import AXIS_MAX, AXIS_MIN, clamp
+from .watermark_chart_view import WatermarkChartView
 
 # Constants
 _DEFAULT_MAX_POINTS = 200
@@ -68,9 +69,10 @@ class TelemetryChart:
         self._hide_steering_zero_legend()
 
     def _init_view(self) -> None:
-        """Initialize the chart view."""
-        self._view = QChartView(self._chart)
+        """Initialize the chart view with watermark support."""
+        self._view = WatermarkChartView(self._chart)
         self._view.setRenderHint(QPainter.Antialiasing)
+        self._watermark_visible = True
 
     def _get_all_series(self) -> tuple:
         """Get all chart series as a tuple."""
@@ -93,7 +95,7 @@ class TelemetryChart:
             pass
 
     @property
-    def view(self) -> QChartView:
+    def view(self) -> WatermarkChartView:
         """Get the chart view widget."""
         return self._view
 
@@ -101,6 +103,16 @@ class TelemetryChart:
     def chart(self) -> QChart:
         """Get the chart object."""
         return self._chart
+
+    def set_watermark_visible(self, visible: bool) -> None:
+        """Set whether the watermark is visible."""
+        self._watermark_visible = visible
+        self._view.set_watermark_visible(visible)
+
+    def set_watermark_text(self, text: str) -> None:
+        """Set the watermark text."""
+        self._view.set_watermark_text(text)
+        self._view.set_watermark_visible(self._watermark_visible)
 
     def reset(self) -> None:
         """Reset all series and sample counter."""
