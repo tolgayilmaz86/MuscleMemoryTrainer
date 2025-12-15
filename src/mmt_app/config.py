@@ -29,7 +29,7 @@ class WheelConfig(DeviceConfig):
     steering_center: int
     steering_range: int
     steering_half_range: int  # Raw value half-range (center to full lock)
-    steering_16bit: bool = False
+    steering_bits: int = 16  # 8, 16, or 32 (bit depth of steering value)
 
 
 @dataclass(frozen=True)
@@ -86,7 +86,7 @@ DEFAULT_STEERING_OFFSET: int = 0
 DEFAULT_STEERING_CENTER: int = 128
 DEFAULT_STEERING_RANGE: int = 900
 DEFAULT_STEERING_HALF_RANGE: int = 32767  # Default for 16-bit (0-65535)
-DEFAULT_STEERING_16BIT: bool = True
+DEFAULT_STEERING_BITS: int = 16  # 8, 16, or 32
 
 # UI defaults
 DEFAULT_THROTTLE_TARGET: int = 60
@@ -137,7 +137,7 @@ def ensure_config_exists() -> None:
         "steering_center": str(DEFAULT_STEERING_CENTER),
         "steering_range": str(DEFAULT_STEERING_RANGE),
         "steering_half_range": str(DEFAULT_STEERING_HALF_RANGE),
-        "steering_16bit": "true" if DEFAULT_STEERING_16BIT else "false",
+        "steering_bits": str(DEFAULT_STEERING_BITS),
     }
 
     # UI section
@@ -175,6 +175,15 @@ def _load_device_section(parser: configparser.ConfigParser, section_name: str) -
         return None
     section = parser[section_name]
     try:
+        # Handle legacy steering_16bit -> steering_bits conversion
+        steering_bits = section.get("steering_bits")
+        if steering_bits is None:
+            # Legacy config: convert steering_16bit to steering_bits
+            is_16bit = section.get("steering_16bit", "false").lower() == "true"
+            steering_bits = 16 if is_16bit else 8
+        else:
+            steering_bits = int(steering_bits)
+        
         return {
             "vendor_id": int(section.get("vendor_id", "").strip(), 0),
             "product_id": int(section.get("product_id", "").strip(), 0),
@@ -186,7 +195,7 @@ def _load_device_section(parser: configparser.ConfigParser, section_name: str) -
             "steering_center": section.get("steering_center"),
             "steering_range": section.get("steering_range"),
             "steering_half_range": section.get("steering_half_range"),
-            "steering_16bit": section.get("steering_16bit", "false").lower() == "true",
+            "steering_bits": steering_bits,
         }
     except Exception:
         return None
@@ -241,7 +250,7 @@ def load_wheel_config() -> Optional[WheelConfig]:
             steering_center=int(data["steering_center"] or 128),
             steering_range=int(data["steering_range"] or 900),
             steering_half_range=int(data.get("steering_half_range") or DEFAULT_STEERING_HALF_RANGE),
-            steering_16bit=bool(data.get("steering_16bit", False)),
+            steering_bits=int(data.get("steering_bits") or DEFAULT_STEERING_BITS),
         )
     except Exception:
         return None
@@ -281,7 +290,7 @@ def save_wheel_config(cfg: WheelConfig) -> None:
         "steering_center": str(int(cfg.steering_center)),
         "steering_range": str(int(cfg.steering_range)),
         "steering_half_range": str(int(cfg.steering_half_range)),
-        "steering_16bit": "true" if cfg.steering_16bit else "false",
+        "steering_bits": str(int(cfg.steering_bits)),
     }
     path = config_path()
     with path.open("w", encoding="utf-8") as f:

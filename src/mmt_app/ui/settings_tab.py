@@ -46,7 +46,7 @@ from mmt_app.config import (
     DEFAULT_STEERING_CENTER,
     DEFAULT_STEERING_RANGE,
     DEFAULT_STEERING_HALF_RANGE,
-    DEFAULT_STEERING_16BIT,
+    DEFAULT_STEERING_BITS,
     DEFAULT_THROTTLE_TARGET,
     DEFAULT_BRAKE_TARGET,
     DEFAULT_GRID_STEP_PERCENT,
@@ -190,9 +190,9 @@ class SettingsTab(QWidget):
         return self._steering_offset.value()
 
     @property
-    def steering_16bit(self) -> bool:
-        """Return whether 16-bit steering mode is enabled."""
-        return self._steering_16bit.isChecked()
+    def steering_bits(self) -> int:
+        """Return the steering bit depth (8, 16, or 32)."""
+        return self._steering_bits.currentData()
 
     @property
     def steering_center(self) -> int:
@@ -465,14 +465,17 @@ class SettingsTab(QWidget):
         self._steering_offset.setValue(DEFAULT_STEERING_OFFSET)
         advanced_form.addRow("Steering byte offset:", self._steering_offset)
 
-        # Steering 16-bit mode
-        self._steering_16bit = QCheckBox("16-bit steering (2 bytes, little-endian)")
-        self._steering_16bit.setChecked(DEFAULT_STEERING_16BIT)
-        self._steering_16bit.setToolTip(
-            "Enable if your wheel uses 16-bit steering values (most racing wheels do).\n"
-            "When enabled, reads 2 bytes starting at the steering offset."
+        # Steering bit depth selector
+        self._steering_bits = QComboBox()
+        self._steering_bits.addItem("8-bit (1 byte)", 8)
+        self._steering_bits.addItem("16-bit (2 bytes)", 16)
+        self._steering_bits.addItem("32-bit signed (4 bytes)", 32)
+        self._steering_bits.setCurrentIndex(1)  # Default to 16-bit
+        self._steering_bits.setToolTip(
+            "Select the bit depth of your wheel's steering value.\n"
+            "Most wheels use 16-bit. VNM and some direct drive wheels use 32-bit signed."
         )
-        advanced_form.addRow("", self._steering_16bit)
+        advanced_form.addRow("Steering format:", self._steering_bits)
 
         self._advanced_widget.setVisible(False)
         layout.addWidget(self._advanced_widget)
@@ -745,7 +748,7 @@ class SettingsTab(QWidget):
                 steering_center=self._steering_center,
                 steering_range=self._steering_range,
                 steering_half_range=self._steering_half_range,
-                steering_16bit=self._steering_16bit.isChecked(),
+                steering_bits=self._steering_bits.currentData(),
             )
         
         save_input_profile(InputProfile(pedals=pedals_cfg, wheel=wheel_cfg, ui=None))
@@ -780,7 +783,10 @@ class SettingsTab(QWidget):
         if wheel_cfg:
             self._wheel_report_len.setValue(wheel_cfg.report_len)
             self._steering_offset.setValue(wheel_cfg.steering_offset)
-            self._steering_16bit.setChecked(wheel_cfg.steering_16bit)
+            # Set steering bits dropdown
+            bits_index = self._steering_bits.findData(wheel_cfg.steering_bits)
+            if bits_index >= 0:
+                self._steering_bits.setCurrentIndex(bits_index)
             self._steering_center = wheel_cfg.steering_center
             self._steering_half_range = wheel_cfg.steering_half_range
             # Clamp steering range to slider bounds (180-1080 degrees)
@@ -1213,9 +1219,16 @@ class SettingsTab(QWidget):
             return
 
         s_off = self._steering_offset.value()
-        is_16bit = self._steering_16bit.isChecked()
+        bits = self._steering_bits.currentData()
         
-        if is_16bit:
+        if bits == 32:
+            if s_off + 3 >= len(report):
+                return
+            # 32-bit signed little-endian
+            raw = report[s_off] | (report[s_off + 1] << 8) | (report[s_off + 2] << 16) | (report[s_off + 3] << 24)
+            # Convert to signed
+            center = raw if raw < 0x80000000 else raw - 0x100000000
+        elif bits == 16:
             if s_off + 1 >= len(report):
                 return
             center = report[s_off] | (report[s_off + 1] << 8)
@@ -1255,7 +1268,7 @@ class SettingsTab(QWidget):
     # -------------------------------------------------------------------------
 
     def calibrate_steering_range(self) -> None:
-        """Calibrate steering center by capturing full left and right positions."""
+        """Calibrate steering by capturing center, left, and right positions."""
         if not self._wheel_session.is_open:
             self._set_status("Wheel not connected. Click Connect first.")
             return
@@ -1263,9 +1276,10 @@ class SettingsTab(QWidget):
             self._set_status("Invalid steering offset. Check advanced settings.")
             return
 
+        self._steering_center_samples = []
         self._steering_left_samples = []
         self._steering_right_samples = []
-        self._steering_pending_stage = "left"
+        self._steering_pending_stage = "center"
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Steering Calibration")
@@ -1274,7 +1288,7 @@ class SettingsTab(QWidget):
         dlg.setModal(True)
         
         label = QLabel(
-            "Step 1 of 2: Turn wheel fully LEFT and hold.\n\n"
+            "Step 1 of 3: Center your wheel and hold.\n\n"
             "Click Start when ready."
         )
         label.setWordWrap(True)
@@ -1310,18 +1324,21 @@ class SettingsTab(QWidget):
         self._set_status("Steering calibration started...")
 
     def _start_pending_steering_stage(self) -> None:
-        """Begin capture for the current pending stage (left/right)."""
+        """Begin capture for the current pending stage (center/left/right)."""
         stage = self._steering_pending_stage
         if not stage:
             return
 
         self._steering_cal_stage = stage
         stage_texts = {
+            "center": "Capturing CENTER position...\n\nHold steady for 3 seconds.",
             "left": "Capturing full LEFT position...\n\nHold steady for 3 seconds.",
             "right": "Capturing full RIGHT position...\n\nHold steady for 3 seconds.",
         }
 
-        if stage == "left":
+        if stage == "center":
+            self._steering_center_samples = []
+        elif stage == "left":
             self._steering_left_samples = []
         else:
             self._steering_right_samples = []
@@ -1344,10 +1361,18 @@ class SettingsTab(QWidget):
         stage = self._steering_cal_stage
         self._steering_cal_stage = None
 
-        if stage == "left":
+        if stage == "center":
+            self._steering_pending_stage = "left"
+            self._set_steering_dialog_text(
+                "Step 2 of 3: Turn wheel fully LEFT and hold.\n\n"
+                "Click Start when ready."
+            )
+            if self._steering_cal_start_btn:
+                self._steering_cal_start_btn.setEnabled(True)
+        elif stage == "left":
             self._steering_pending_stage = "right"
             self._set_steering_dialog_text(
-                "Step 2 of 2: Turn wheel fully RIGHT and hold.\n\n"
+                "Step 3 of 3: Turn wheel fully RIGHT and hold.\n\n"
                 "Click Start when ready."
             )
             if self._steering_cal_start_btn:
@@ -1391,9 +1416,16 @@ class SettingsTab(QWidget):
             return
 
         s_off = self._steering_offset.value()
-        is_16bit = self._steering_16bit.isChecked()
+        bits = self._steering_bits.currentData()
         
-        if is_16bit:
+        if bits == 32:
+            # 32-bit signed little-endian
+            if s_off + 3 >= len(report):
+                return
+            raw = report[s_off] | (report[s_off + 1] << 8) | (report[s_off + 2] << 16) | (report[s_off + 3] << 24)
+            # Convert to signed
+            value = raw if raw < 0x80000000 else raw - 0x100000000
+        elif bits == 16:
             # 16-bit little-endian
             if s_off + 1 >= len(report):
                 return
@@ -1404,30 +1436,40 @@ class SettingsTab(QWidget):
                 return
             value = int(report[s_off])
         
-        if self._steering_cal_stage == "left":
+        if self._steering_cal_stage == "center":
+            self._steering_center_samples.append(value)
+        elif self._steering_cal_stage == "left":
             self._steering_left_samples.append(value)
         elif self._steering_cal_stage == "right":
             self._steering_right_samples.append(value)
 
     def _finish_steering_range_calibration(self) -> None:
-        """Complete steering calibration by computing center and half-range from left/right extremes."""
+        """Complete steering calibration using captured center, left, and right positions."""
         self._steering_cal_timer.stop()
         self._steering_cal_stage = None
 
-        if not self._steering_left_samples or not self._steering_right_samples:
+        if not self._steering_center_samples or not self._steering_left_samples or not self._steering_right_samples:
             self._set_status("Calibration failed: not enough data captured.")
             return
 
-        # Get average of left and right positions
+        # Get average of center, left and right positions
+        center_avg = sum(self._steering_center_samples) / len(self._steering_center_samples)
         left_avg = sum(self._steering_left_samples) / len(self._steering_left_samples)
         right_avg = sum(self._steering_right_samples) / len(self._steering_right_samples)
         
-        # Center is midpoint between left and right extremes
-        center = int((left_avg + right_avg) / 2)
+        # Debug: show min/max to detect erratic values
+        center_min, center_max = min(self._steering_center_samples), max(self._steering_center_samples)
+        left_min, left_max = min(self._steering_left_samples), max(self._steering_left_samples)
+        right_min, right_max = min(self._steering_right_samples), max(self._steering_right_samples)
         
-        # Half-range is the distance from center to either extreme
-        # Use the average of both sides in case they're slightly asymmetric
-        half_range = int(abs(right_avg - left_avg) / 2)
+        # Center is the captured center position (not computed midpoint)
+        center = int(center_avg)
+        
+        # Half-range is the larger of the two distances from center to extremes
+        # This handles asymmetric wheels correctly
+        left_distance = abs(center_avg - left_avg)
+        right_distance = abs(right_avg - center_avg)
+        half_range = int(max(left_distance, right_distance))
         # Ensure a minimum to avoid division by zero
         half_range = max(half_range, 100)
 

@@ -373,8 +373,16 @@ class MainWindow(QMainWindow):
                     )
                     if latest:
                         s_off = self._settings_tab.steering_offset
-                        is_16bit = self._settings_tab.steering_16bit
-                        if is_16bit:
+                        bits = self._settings_tab.steering_bits
+                        if bits == 32:
+                            # 32-bit signed little-endian steering (4 bytes)
+                            if s_off + 3 < len(latest):
+                                raw = latest[s_off] | (latest[s_off + 1] << 8) | (latest[s_off + 2] << 16) | (latest[s_off + 3] << 24)
+                                # Convert to signed
+                                raw_steering = raw if raw < 0x80000000 else raw - 0x100000000
+                                steering_raw = self._apply_steering_32bit(raw_steering)
+                                steering = self._smooth_steering(steering_raw, self._last_sample.steering)
+                        elif bits == 16:
                             # 16-bit little-endian steering (2 bytes)
                             if s_off + 1 < len(latest):
                                 raw_steering = latest[s_off] | (latest[s_off + 1] << 8)
@@ -433,6 +441,22 @@ class MainWindow(QMainWindow):
         - values above center = positive (right)
         """
         center = float(self._settings_tab.steering_center or 32768)
+        # Use calibrated half-range from steering calibration
+        span = max(float(self._settings_tab.steering_half_range), 1.0)  # Avoid division by zero
+        normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)
+        return normalized * 100.0
+
+    def _apply_steering_32bit(self, raw_value: int) -> float:
+        """Convert raw 32-bit signed steering value to -100..100 using calibrated center and range.
+        
+        The raw value is a signed 32-bit integer from the HID report (little-endian).
+        Common for direct drive wheels like VNM, Simucube, etc.
+        We map it such that:
+        - center value = 0% steering
+        - values below center = negative (left)
+        - values above center = positive (right)
+        """
+        center = float(self._settings_tab.steering_center or 0)
         # Use calibrated half-range from steering calibration
         span = max(float(self._settings_tab.steering_half_range), 1.0)  # Avoid division by zero
         normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)

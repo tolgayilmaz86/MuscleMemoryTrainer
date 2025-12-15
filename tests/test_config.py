@@ -41,6 +41,7 @@ class TestInputProfile:
             steering_center=120,
             steering_range=80,
             steering_half_range=16000,
+            steering_bits=16,
         )
         ui = config.UiConfig(throttle_target=70, brake_target=30, grid_step_percent=15)
         profile = config.InputProfile(pedals=pedals, wheel=wheel, ui=ui)
@@ -83,6 +84,7 @@ class TestInputProfile:
             steering_center=120,
             steering_range=80,
             steering_half_range=16000,
+            steering_bits=16,
         )
         ui = config.UiConfig(throttle_target=50, brake_target=50, grid_step_percent=10)
         profile = config.InputProfile(pedals=None, wheel=wheel, ui=ui)
@@ -277,6 +279,7 @@ class TestDeviceConfig:
             steering_center=120,
             steering_range=80,
             steering_half_range=16000,
+            steering_bits=16,
         )
         with pytest.raises(AttributeError):
             wheel.steering_center = 128  # type: ignore
