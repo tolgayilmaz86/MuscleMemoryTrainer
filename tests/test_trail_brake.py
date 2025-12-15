@@ -1,4 +1,4 @@
-"""Tests for the static_brake module.
+"""Tests for the trail_brake module.
 
 This module tests brake trace generation, validation, and preset creation.
 """
@@ -7,13 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from mmt_app.static_brake import (
+from mmt_app.trail_brake import (
     BrakeTrace,
     random_trace,
     presets,
-    _ease,
-    _smooth,
-    _jitter,
+    ease,
+    smooth,
+    jitter,
     _clamp_points,
     _anchors_for_length,
     _interpolate_anchors,
@@ -73,42 +73,42 @@ class TestBrakeTrace:
 
 
 class TestEaseFunction:
-    """Tests for the _ease smoothstep function."""
+    """Tests for the ease smoothstep function."""
 
     def test_ease_at_zero(self) -> None:
         """Easing at t=0 should return 0."""
-        assert _ease(0.0) == pytest.approx(0.0)
+        assert ease(0.0) == pytest.approx(0.0)
 
     def test_ease_at_one(self) -> None:
         """Easing at t=1 should return 1."""
-        assert _ease(1.0) == pytest.approx(1.0)
+        assert ease(1.0) == pytest.approx(1.0)
 
     def test_ease_at_midpoint(self) -> None:
         """Easing at t=0.5 should return 0.5 (inflection point)."""
-        assert _ease(0.5) == pytest.approx(0.5)
+        assert ease(0.5) == pytest.approx(0.5)
 
     def test_ease_is_monotonic(self) -> None:
         """Easing should be monotonically increasing."""
         prev = 0.0
         for i in range(101):
             t = i / 100.0
-            current = _ease(t)
+            current = ease(t)
             assert current >= prev, f"Ease not monotonic at t={t}"
             prev = current
 
     def test_ease_clamps_negative_input(self) -> None:
         """Easing should clamp negative inputs to 0."""
-        assert _ease(-0.5) == pytest.approx(0.0)
+        assert ease(-0.5) == pytest.approx(0.0)
 
     def test_ease_clamps_input_over_one(self) -> None:
         """Easing should clamp inputs > 1 to 1."""
-        assert _ease(1.5) == pytest.approx(1.0)
+        assert ease(1.5) == pytest.approx(1.0)
 
     def test_ease_symmetry(self) -> None:
         """Ease should be symmetric around the midpoint: ease(t) + ease(1-t) = 1."""
         for i in range(50):
             t = i / 100.0
-            assert _ease(t) + _ease(1.0 - t) == pytest.approx(1.0)
+            assert ease(t) + ease(1.0 - t) == pytest.approx(1.0)
 
 
 # ============================================================================
@@ -117,42 +117,42 @@ class TestEaseFunction:
 
 
 class TestSmoothFunction:
-    """Tests for the _smooth weighted average function."""
+    """Tests for the smooth weighted average function."""
 
     def test_smooth_preserves_length(self) -> None:
         """Smoothing should not change the number of values."""
         values = [0.0, 50.0, 100.0, 50.0, 0.0]
-        smoothed = _smooth(values)
+        smoothed = smooth(values)
         assert len(smoothed) == len(values)
 
     def test_smooth_reduces_spikes(self) -> None:
         """Smoothing should reduce spike magnitudes."""
         # Spike in the middle
         values = [0.0, 0.0, 100.0, 0.0, 0.0]
-        smoothed = _smooth(values, passes=1)
+        smoothed = smooth(values, passes=1)
         # The spike should be reduced (original neighbors were 0)
         assert smoothed[2] < 100.0
 
     def test_smooth_with_zero_passes(self) -> None:
         """Smoothing with 0 passes should return original values."""
         values = [10.0, 20.0, 30.0]
-        smoothed = _smooth(values, passes=0)
+        smoothed = smooth(values, passes=0)
         assert smoothed == values
 
     def test_smooth_constant_values_unchanged(self) -> None:
         """Smoothing constant values should return approximately same values."""
         values = [50.0, 50.0, 50.0, 50.0, 50.0]
-        smoothed = _smooth(values)
+        smoothed = smooth(values)
         for v in smoothed:
             assert v == pytest.approx(50.0)
 
     def test_smooth_empty_list(self) -> None:
         """Smoothing empty list should return empty list."""
-        assert _smooth([]) == []
+        assert smooth([]) == []
 
     def test_smooth_single_value(self) -> None:
         """Smoothing single value should return that value."""
-        smoothed = _smooth([42.0])
+        smoothed = smooth([42.0])
         assert len(smoothed) == 1
         assert smoothed[0] == pytest.approx(42.0)
 
@@ -163,12 +163,12 @@ class TestSmoothFunction:
 
 
 class TestJitterFunction:
-    """Tests for the _jitter noise addition function."""
+    """Tests for the jitter noise addition function."""
 
     def test_jitter_preserves_length(self) -> None:
         """Jitter should not change the number of values."""
         values = [0.0, 50.0, 100.0]
-        jittered = _jitter(values)
+        jittered = jitter(values)
         assert len(jittered) == len(values)
 
     def test_jitter_stays_within_bounds(self) -> None:
@@ -176,21 +176,21 @@ class TestJitterFunction:
         # Test edge cases that could go out of bounds
         values = [0.0, 1.0, 99.0, 100.0]
         for _ in range(100):  # Run multiple times due to randomness
-            jittered = _jitter(values, spread=5.0)
+            jittered = jitter(values, spread=5.0)
             for v in jittered:
                 assert 0.0 <= v <= 100.0
 
     def test_jitter_with_zero_spread(self) -> None:
         """Jitter with spread=0 should return original values."""
         values = [25.0, 50.0, 75.0]
-        jittered = _jitter(values, spread=0.0)
+        jittered = jitter(values, spread=0.0)
         for orig, jit in zip(values, jittered):
             assert jit == pytest.approx(orig)
 
     def test_jitter_modifies_values(self) -> None:
         """Jitter with non-zero spread should modify at least some values."""
         values = [50.0] * 100
-        jittered = _jitter(values, spread=5.0)
+        jittered = jitter(values, spread=5.0)
         # With 100 values, at least some should differ
         differences = sum(1 for o, j in zip(values, jittered) if o != j)
         assert differences > 0

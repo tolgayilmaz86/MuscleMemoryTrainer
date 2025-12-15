@@ -2,22 +2,28 @@
 
 Exports:
     MainWindow: Main application window.
+    AboutTab: Application information and credits.
     SettingsTab: Device configuration and calibration settings.
-    StaticBrakeTab: Static brake training tab.
+    TelemetryTab: Live telemetry visualization tab.
+    TrailBrakeTab: Trail brake training tab.
     ActiveBrakeTab: Active brake training tab.
-    TelemetryChart: Live telemetry visualization.
+    TelemetryChart: Live telemetry chart component.
 """
 
+from .about_tab import AboutTab
 from .main_window import MainWindow
 from .settings_tab import SettingsTab
-from .static_brake_tab import StaticBrakeTab
+from .telemetry_tab import TelemetryTab
+from .trail_brake_tab import TrailBrakeTab
 from .active_brake_tab import ActiveBrakeTab
 from .telemetry_chart import TelemetryChart
 
 __all__ = [
     "MainWindow",
+    "AboutTab",
     "SettingsTab",
-    "StaticBrakeTab",
+    "TelemetryTab",
+    "TrailBrakeTab",
     "ActiveBrakeTab",
     "TelemetryChart",
 ]

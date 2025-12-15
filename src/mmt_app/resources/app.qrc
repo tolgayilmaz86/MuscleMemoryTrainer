@@ -1,5 +1,6 @@
 <RCC version="1.0">
     <qresource prefix="/">
         <file>styles/theme.qss</file>
+        <file>bmc-button.png</file>
     </qresource>
 </RCC>

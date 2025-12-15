@@ -1,7 +1,7 @@
-"""Static brake trace generation and management.
+"""Trail brake trace generation and management.
 
 This module provides functionality for creating brake pressure traces used in
-static brake training. It includes:
+trail brake training. It includes:
 - Random trace generation with smooth, realistic curves
 - Preset traces for common braking patterns (trail braking, stab braking, etc.)
 - Mathematical utilities for smoothing and interpolation
@@ -46,8 +46,8 @@ _PEAK_HEIGHT_MAX_LOW = 70.0
 _LOW_PEAK_PROBABILITY = 0.2  # 20% chance of a lower peak
 
 # Smoothing parameters
-_DEFAULT_SMOOTH_PASSES = 2
-_DEFAULT_JITTER_SPREAD = 1.5
+_DEFAULT_SMOOTH_PASSES = 4  # More passes for smoother curves
+_DEFAULT_JITTER_SPREAD = 1.0  # Reduced jitter for cleaner shapes
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +84,7 @@ class BrakeTrace:
 # ============================================================================
 
 
-def _ease(t: float) -> float:
+def ease(t: float) -> float:
     """Apply smooth easing (ease-in-out) to a normalized input.
 
     This function converts a linear input (0 to 1) into a smooth S-curve,
@@ -111,9 +111,9 @@ def _ease(t: float) -> float:
         Eased value in range [0, 1], following an S-curve.
 
     Example:
-        >>> _ease(0.0)   # Start: returns 0.0
-        >>> _ease(0.5)   # Middle: returns 0.5 (inflection point)
-        >>> _ease(1.0)   # End: returns 1.0
+        >>> ease(0.0)   # Start: returns 0.0
+        >>> ease(0.5)   # Middle: returns 0.5 (inflection point)
+        >>> ease(1.0)   # End: returns 1.0
     """
     # Clamp input to valid range to prevent unexpected results
     t = max(0.0, min(1.0, t))
@@ -125,7 +125,7 @@ def _ease(t: float) -> float:
     return 0.5 - 0.5 * math.cos(math.pi * t)
 
 
-def _smooth(values: list[float], *, passes: int = _DEFAULT_SMOOTH_PASSES) -> list[float]:
+def smooth(values: list[float], *, passes: int = _DEFAULT_SMOOTH_PASSES) -> list[float]:
     """Apply weighted moving average smoothing to reduce noise.
 
     This uses a 3-point weighted kernel [1, 2, 1] / 4, which gives more
@@ -152,11 +152,13 @@ def _smooth(values: list[float], *, passes: int = _DEFAULT_SMOOTH_PASSES) -> lis
 
     Args:
         values: List of values to smooth.
-        passes: Number of smoothing iterations (default: 2).
+        passes: Number of smoothing iterations (default: 4).
 
     Returns:
         Smoothed list of values (same length as input).
     """
+    if not values:
+        return values
     smoothed = list(values)
 
     for _ in range(max(0, passes)):
@@ -173,10 +175,10 @@ def _smooth(values: list[float], *, passes: int = _DEFAULT_SMOOTH_PASSES) -> lis
 
         smoothed = buf
 
-    return smoothed
+    return [max(0.0, min(100.0, v)) for v in smoothed]
 
 
-def _jitter(values: list[float], *, spread: float = _DEFAULT_JITTER_SPREAD) -> list[float]:
+def jitter(values: list[float], *, spread: float = _DEFAULT_JITTER_SPREAD) -> list[float]:
     """Add small random variations to values for a more natural appearance.
 
     Real-world brake inputs are never perfectly smooth - there's always
@@ -187,14 +189,14 @@ def _jitter(values: list[float], *, spread: float = _DEFAULT_JITTER_SPREAD) -> l
     For each value, add a random offset uniformly distributed in [-spread, +spread].
     The result is then clamped to [0, 100] to stay within valid brake range.
 
-    Example with spread=1.5:
+    Example with spread=1.0:
         Original value: 50.0
-        Random offset: anywhere from -1.5 to +1.5
-        Result: between 48.5 and 51.5
+        Random offset: anywhere from -1.0 to +1.0
+        Result: between 49.0 and 51.0
 
     Args:
         values: List of values to add jitter to.
-        spread: Maximum deviation in either direction (default: 1.5).
+        spread: Maximum deviation in either direction (default: 1.0).
 
     Returns:
         List of jittered values, clamped to [0, 100].
@@ -361,7 +363,7 @@ def _interpolate_anchors(anchors: list[tuple[int, float]], length: int) -> list[
 
             # Apply easing for smooth transitions
             # This makes the curve slow down near anchors and speed up between them
-            t_eased = _ease(t)
+            t_eased = ease(t)
 
             # Linear interpolation with eased parameter
             # y = y1 + (y2 - y1) * t = start + (change * progress)
@@ -460,8 +462,11 @@ def random_trace(length: int = _DEFAULT_TRACE_LENGTH) -> BrakeTrace:
     # Step 2: Interpolate to fill in all values between anchors
     values = _interpolate_anchors(anchors, length)
 
-    # Step 3 & 4: Add jitter for realism, then smooth to blend it
-    values = _smooth(_jitter(values))
+    # Step 3: Apply smoothing first to get clean curves from interpolation
+    values = smooth(values, passes=3)
+
+    # Step 4: Add subtle jitter for natural variation, then smooth again to blend
+    values = smooth(jitter(values, spread=0.8), passes=2)
 
     # Step 5: Ensure endpoints are exactly zero (may have drifted from jitter)
     values[0] = 0.0

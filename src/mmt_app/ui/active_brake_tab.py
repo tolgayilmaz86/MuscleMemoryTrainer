@@ -12,16 +12,15 @@ from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
-    QHBoxLayout,
     QLabel,
     QPushButton,
-    QSlider,
+    QHBoxLayout,
     QVBoxLayout,
     QWidget,
     QStyle,
 )
 
-from ..config import ActiveBrakeConfig, load_active_brake_config, save_active_brake_config
+from ..trail_brake import ease, smooth, jitter
 from .watermark_chart_view import WatermarkChartView
 from .utils import AXIS_MAX, AXIS_MIN, clamp
 
@@ -30,8 +29,6 @@ _DEFAULT_MID_X = 50.0
 _DEFAULT_AXIS_X_MAX = 100.0
 _DEFAULT_SCROLL_SPEED = 1.5
 _DEFAULT_TIMER_INTERVAL = 40
-_MIN_GRID_STEP = 5
-_MAX_GRID_STEP = 50
 _DEFAULT_GRID_STEP = 10
 _MIN_UPDATE_RATE_HZ = 5
 _MAX_UPDATE_RATE_HZ = 120
@@ -75,22 +72,6 @@ class ActiveBrakeTab(QWidget):
         self._timer = QTimer(interval=_DEFAULT_TIMER_INTERVAL)
         self._timer.timeout.connect(self._on_tick)
 
-        self._grid_slider = QSlider(Qt.Horizontal)
-        self._grid_slider.setRange(_DEFAULT_GRID_STEP, _MAX_GRID_STEP)
-        self._grid_slider.setSingleStep(_MIN_GRID_STEP)
-        self._grid_slider.setPageStep(_MIN_GRID_STEP)
-        self._grid_slider.setTickInterval(_MIN_GRID_STEP)
-        self._grid_slider.setTickPosition(QSlider.TicksBelow)
-        self._grid_slider.setValue(_DEFAULT_GRID_STEP)
-        self._grid_slider.valueChanged.connect(self._on_grid_changed)
-        self._grid_value_label = QLabel()
-        self._update_grid_value_label(self._grid_slider.value())
-        grid_row = QWidget()
-        grid_row_layout = QHBoxLayout(grid_row)
-        grid_row_layout.setContentsMargins(0, 0, 0, 0)
-        grid_row_layout.addWidget(self._grid_slider, 1)
-        grid_row_layout.addWidget(self._grid_value_label)
-
         self._status_label = QLabel("Press Start, then match the red target as it crosses the center line.")
 
         self._start_btn = QPushButton("Start")
@@ -115,7 +96,6 @@ class ActiveBrakeTab(QWidget):
         self._chart_view = WatermarkChartView(self._chart)
 
         controls = QFormLayout()
-        controls.addRow("Grid division", grid_row)
         controls.addRow("Watermark", self._watermark_checkbox)
 
         buttons = QHBoxLayout()
@@ -140,7 +120,7 @@ class ActiveBrakeTab(QWidget):
             target_points=[],
             user_points=[],
         )
-        self._load_config()
+        self._apply_grid_step(_DEFAULT_GRID_STEP)
         self.reset()
 
     def _create_chart(self):
@@ -178,37 +158,9 @@ class ActiveBrakeTab(QWidget):
 
         return chart, series_target, series_user, series_midline, axis_x, axis_y
 
-    def _load_config(self) -> None:
-        """Restore saved grid spacing for the active brake chart."""
-        cfg = load_active_brake_config()
-        self._apply_grid_step(cfg.grid_step_percent)
-
-    def _save_config(self) -> None:
-        """Persist the current grid spacing to config."""
-        step = int(self._grid_slider.value())
-        save_active_brake_config(ActiveBrakeConfig(grid_step_percent=step))
-
-    def _on_grid_changed(self, value: int) -> None:
-        """Handle user selecting a new grid step via the slider."""
-        step = int(round(value / _MIN_GRID_STEP) * _MIN_GRID_STEP)
-        step = max(_MIN_GRID_STEP, min(_MAX_GRID_STEP, step))
-        if step != value:
-            self._grid_slider.blockSignals(True)
-            self._grid_slider.setValue(step)
-            self._grid_slider.blockSignals(False)
-        self._update_grid_value_label(step)
-        self._apply_grid_step(step)
-        self._save_config()
-
     def _apply_grid_step(self, step_percent: int) -> None:
-        """Apply grid tick spacing on the Y axis and sync the slider."""
-        step_percent = max(_MIN_GRID_STEP, min(_MAX_GRID_STEP, int(step_percent)))
-        try:
-            self._grid_slider.blockSignals(True)
-            self._grid_slider.setValue(step_percent)
-        finally:
-            self._grid_slider.blockSignals(False)
-        self._update_grid_value_label(step_percent)
+        """Apply grid tick spacing on the Y axis."""
+        step_percent = max(5, min(50, int(step_percent)))
         tick_count = int((self._axis_y_max - self._axis_y_min) / step_percent) + 1
         try:
             self._axis_y.setTickCount(tick_count)
@@ -329,7 +281,7 @@ class ActiveBrakeTab(QWidget):
             raw = self._shape_trail_brake(length, peak)
         else:
             raw = self._shape_ramp_hold_drop(length, peak)
-        return self._smooth(self._jitter(raw))
+        return smooth(jitter(raw, spread=2.0), passes=2)
 
     @staticmethod
     def _shape_ramp_hold_drop(length: int, peak: float) -> list[float]:
@@ -340,11 +292,11 @@ class ActiveBrakeTab(QWidget):
         values = []
         for i in range(up):
             t = (i + 1) / up
-            values.append(peak * ActiveBrakeTab._ease(t))
+            values.append(peak * ease(t))
         values.extend([peak] * hold)
         for i in range(down):
             t = (i + 1) / down
-            values.append(peak * (1 - ActiveBrakeTab._ease(t)))
+            values.append(peak * (1 - ease(t)))
         return [max(0.0, min(100.0, v)) for v in values]
 
     @staticmethod
@@ -355,10 +307,10 @@ class ActiveBrakeTab(QWidget):
         values = []
         for i in range(up):
             t = (i + 1) / up
-            values.append(peak * ActiveBrakeTab._ease(t))
+            values.append(peak * ease(t))
         for i in range(down):
             t = (i + 1) / down
-            values.append(peak * (1 - ActiveBrakeTab._ease(t)))
+            values.append(peak * (1 - ease(t)))
         return [max(0.0, min(100.0, v)) for v in values]
 
     @staticmethod
@@ -386,40 +338,11 @@ class ActiveBrakeTab(QWidget):
         values = []
         for i in range(up):
             t = (i + 1) / up
-            values.append(peak * ActiveBrakeTab._ease(t))
+            values.append(peak * ease(t))
         for i in range(decay):
             t = (i + 1) / decay
-            values.append(peak * (1 - ActiveBrakeTab._ease(t) * 0.9))
+            values.append(peak * (1 - ease(t) * 0.9))
         return [max(0.0, min(100.0, v)) for v in values]
-
-    @staticmethod
-    def _ease(t: float) -> float:
-        """Smoothstep-ish easing for softer ramps."""
-        t = max(0.0, min(1.0, t))
-        return 0.5 - 0.5 * math.cos(math.pi * t)
-
-    @staticmethod
-    def _smooth(values: list[float]) -> list[float]:
-        """Light smoothing pass over generated values."""
-        if not values:
-            return values
-        smoothed = values[:]
-        for _ in range(2):
-            buf: list[float] = []
-            for i, v in enumerate(smoothed):
-                left = smoothed[i - 1] if i > 0 else smoothed[i]
-                right = smoothed[i + 1] if i + 1 < len(smoothed) else smoothed[i]
-                buf.append((left + v * 2 + right) / 4.0)
-            smoothed = buf
-        return [max(0.0, min(100.0, v)) for v in smoothed]
-
-    @staticmethod
-    def _jitter(values: list[float]) -> list[float]:
-        """Add small random noise and clamp to [0,100]."""
-        return [
-            max(0.0, min(100.0, v + random.uniform(-2.0, 2.0)))
-            for v in values
-        ]
 
     def _next_target_value(self) -> float:
         """Pull the next target value, refilling the queue if needed."""
@@ -438,10 +361,6 @@ class ActiveBrakeTab(QWidget):
     def _clamp_y(self, value: float) -> float:
         """Clamp a value to the visible Y range."""
         return clamp(value, self._axis_y_min, self._axis_y_max)
-
-    def _update_grid_value_label(self, step_percent: int) -> None:
-        """Update the grid value label with the current step."""
-        self._grid_value_label.setText(f"{int(step_percent)}%")
 
     def _set_watermark_percent(self, value: float) -> None:
         """Update the watermark display with the current brake percentage."""

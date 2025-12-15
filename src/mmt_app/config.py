@@ -52,11 +52,13 @@ class UiConfig:
     throttle_sound_path: str | None = None
     brake_sound_enabled: bool = True
     brake_sound_path: str | None = None
+    window_width: int = 1080
+    window_height: int = 600
 
 
 @dataclass(frozen=True)
-class StaticBrakeConfig:
-    """Persistence for Static Brake mode."""
+class TrailBrakeConfig:
+    """Persistence for Trail Brake mode."""
 
     selected_trace: str
 
@@ -213,6 +215,8 @@ def load_ui_config() -> Optional[UiConfig]:
             throttle_sound_path=section.get("throttle_sound_path", fallback="").strip() or None,
             brake_sound_enabled=section.getboolean("brake_sound_enabled", fallback=True),
             brake_sound_path=section.get("brake_sound_path", fallback="").strip() or None,
+            window_width=int(section.get("window_width", "1080")),
+            window_height=int(section.get("window_height", "600")),
         )
     except Exception:
         return None
@@ -231,46 +235,48 @@ def save_ui_config(cfg: UiConfig) -> None:
         "throttle_sound_path": cfg.throttle_sound_path or "",
         "brake_sound_enabled": "true" if bool(cfg.brake_sound_enabled) else "false",
         "brake_sound_path": cfg.brake_sound_path or "",
+        "window_width": str(int(cfg.window_width)),
+        "window_height": str(int(cfg.window_height)),
     }
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
         parser.write(f)
 
 
-def load_static_brake_config() -> Optional[StaticBrakeConfig]:
+def load_trail_brake_config() -> Optional[TrailBrakeConfig]:
     path = config_path()
     if not path.exists():
         return None
     parser = configparser.ConfigParser()
     parser.read(path, encoding="utf-8")
-    if "static_brake" not in parser:
+    if "trail_brake" not in parser:
         return None
-    section = parser["static_brake"]
+    section = parser["trail_brake"]
     try:
-        return StaticBrakeConfig(selected_trace=section.get("selected_trace", "").strip())
+        return TrailBrakeConfig(selected_trace=section.get("selected_trace", "").strip())
     except Exception:
         return None
 
 
-def save_static_brake_config(cfg: StaticBrakeConfig) -> None:
+def save_trail_brake_config(cfg: TrailBrakeConfig) -> None:
     parser = configparser.ConfigParser()
     parser.read(config_path(), encoding="utf-8")
-    parser["static_brake"] = {"selected_trace": cfg.selected_trace}
+    parser["trail_brake"] = {"selected_trace": cfg.selected_trace}
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
         parser.write(f)
 
 
-def load_static_brake_traces() -> dict[str, list[int]]:
-    """Load user-defined static brake traces from config.ini."""
+def load_trail_brake_traces() -> dict[str, list[int]]:
+    """Load user-defined trail brake traces from config.ini."""
     path = config_path()
     if not path.exists():
         return {}
     parser = configparser.ConfigParser()
     parser.read(path, encoding="utf-8")
-    if "static_brake_traces" not in parser:
+    if "trail_brake_traces" not in parser:
         return {}
-    section = parser["static_brake_traces"]
+    section = parser["trail_brake_traces"]
     traces: dict[str, list[int]] = {}
     for name, raw in section.items():
         try:
@@ -282,8 +288,8 @@ def load_static_brake_traces() -> dict[str, list[int]]:
     return traces
 
 
-def save_static_brake_trace(name: str, points: list[int]) -> None:
-    """Save a user-defined static brake trace to config.ini."""
+def save_trail_brake_trace(name: str, points: list[int]) -> None:
+    """Save a user-defined trail brake trace to config.ini."""
     safe_name = name.strip()
     if not safe_name:
         raise ValueError("Trace name must not be empty")
@@ -291,9 +297,9 @@ def save_static_brake_trace(name: str, points: list[int]) -> None:
 
     parser = configparser.ConfigParser()
     parser.read(config_path(), encoding="utf-8")
-    if "static_brake_traces" not in parser:
-        parser["static_brake_traces"] = {}
-    parser["static_brake_traces"][safe_name] = json.dumps(normalized, separators=(",", ":"))
+    if "trail_brake_traces" not in parser:
+        parser["trail_brake_traces"] = {}
+    parser["trail_brake_traces"][safe_name] = json.dumps(normalized, separators=(",", ":"))
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
         parser.write(f)

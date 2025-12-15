@@ -114,49 +114,49 @@ class TestMissingFile:
 
 
 # ============================================================================
-# Static Brake Config Tests
+# Trail Brake Config Tests
 # ============================================================================
 
 
-class TestStaticBrakeConfig:
-    """Tests for Static Brake configuration persistence."""
+class TestTrailBrakeConfig:
+    """Tests for Trail Brake configuration persistence."""
 
-    def test_static_brake_traces_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
-        """Saving and loading static brake traces should preserve data."""
+    def test_trail_brake_traces_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
+        """Saving and loading trail brake traces should preserve data."""
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        config.save_static_brake_trace("my_trace", [0, 50, 100])
-        traces = config.load_static_brake_traces()
+        config.save_trail_brake_trace("my_trace", [0, 50, 100])
+        traces = config.load_trail_brake_traces()
         assert traces["my_trace"] == [0, 50, 100]
 
     def test_save_multiple_traces(self, tmp_path: Path, monkeypatch) -> None:
         """Should be able to save multiple traces."""
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        config.save_static_brake_trace("trace1", [0, 25, 50])
-        config.save_static_brake_trace("trace2", [0, 75, 100])
-        traces = config.load_static_brake_traces()
+        config.save_trail_brake_trace("trace1", [0, 25, 50])
+        config.save_trail_brake_trace("trace2", [0, 75, 100])
+        traces = config.load_trail_brake_traces()
         assert traces["trace1"] == [0, 25, 50]
         assert traces["trace2"] == [0, 75, 100]
 
     def test_overwrite_existing_trace(self, tmp_path: Path, monkeypatch) -> None:
         """Saving trace with existing name should overwrite."""
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        config.save_static_brake_trace("my_trace", [0, 50, 100])
-        config.save_static_brake_trace("my_trace", [0, 25, 50])
-        traces = config.load_static_brake_traces()
+        config.save_trail_brake_trace("my_trace", [0, 50, 100])
+        config.save_trail_brake_trace("my_trace", [0, 25, 50])
+        traces = config.load_trail_brake_traces()
         assert traces["my_trace"] == [0, 25, 50]
 
     def test_load_traces_missing_returns_empty_dict(self, tmp_path: Path, monkeypatch) -> None:
         """Loading traces from missing file should return empty dict."""
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        traces = config.load_static_brake_traces()
+        traces = config.load_trail_brake_traces()
         assert traces == {}
 
-    def test_static_brake_config_selected_trace(self, tmp_path: Path, monkeypatch) -> None:
+    def test_trail_brake_config_selected_trace(self, tmp_path: Path, monkeypatch) -> None:
         """Should save and load selected trace preference."""
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
-        cfg = config.StaticBrakeConfig(selected_trace="my_trace")
-        config.save_static_brake_config(cfg)
-        loaded = config.load_static_brake_config()
+        cfg = config.TrailBrakeConfig(selected_trace="my_trace")
+        config.save_trail_brake_config(cfg)
+        loaded = config.load_trail_brake_config()
         assert loaded is not None
         assert loaded.selected_trace == "my_trace"
 

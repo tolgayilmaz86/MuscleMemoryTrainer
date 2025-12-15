@@ -12,27 +12,18 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QHBoxLayout,
-    QLabel,
     QMainWindow,
-    QProgressBar,
-    QPushButton,
-    QSizePolicy,
-    QSlider,
     QStatusBar,
-    QStyle,
     QTabWidget,
-    QVBoxLayout,
-    QWidget,
 )
 
 from ..config import UiConfig, load_ui_config, save_ui_config
 from ..telemetry import TelemetrySample
+from .about_tab import AboutTab
 from .active_brake_tab import ActiveBrakeTab
 from .settings_tab import SettingsTab
-from .static_brake_tab import StaticBrakeTab
-from .telemetry_chart import TelemetryChart
+from .telemetry_tab import TelemetryTab
+from .trail_brake_tab import TrailBrakeTab
 from .utils import (
     clamp,
     clamp_int,
@@ -60,7 +51,7 @@ class MainWindow(QMainWindow):
 
     Orchestrates the application tabs:
     - Telemetry: Live chart for throttle/brake/steering.
-    - Static Brake: Trace-following brake training.
+    - Trail Brake: Trace-following brake training.
     - Active Brake: Dynamic brake training with moving targets.
     - Settings: Device configuration, calibration, and sound settings.
 
@@ -115,8 +106,12 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         """Build the main UI with tabs."""
-        self._update_rate_row = self._create_update_rate_row()
-        telemetry_tab = self._build_telemetry_tab()
+        # Create telemetry tab with callbacks
+        self._telemetry_tab = TelemetryTab(
+            on_targets_changed=self._schedule_save_ui_settings,
+        )
+        self._telemetry_tab.connect_start_stop(self._on_telemetry_start_stop)
+        self._telemetry_tab.connect_reset(self._on_telemetry_reset)
         
         # Create settings tab with callbacks
         self._settings_tab = SettingsTab(
@@ -126,130 +121,23 @@ class MainWindow(QMainWindow):
             on_steering_visible_changed=self._on_settings_steering_visible_changed,
         )
         
-        self._active_brake_tab = self._build_active_brake_tab()
+        self._active_brake_tab = ActiveBrakeTab(read_brake_percent=self._read_brake_for_active_tab)
+
+        self._about_tab = AboutTab(app_name=self._app_name, version=self._version)
 
         tabs = QTabWidget()
-        tabs.addTab(telemetry_tab, "Telemetry")
-        tabs.addTab(self._build_static_brake_tab(), "Static Brake")
+        tabs.addTab(self._telemetry_tab, "Telemetry")
+        tabs.addTab(TrailBrakeTab(read_brake_percent=self._read_brake_for_static_tab), "Trail Brake")
         tabs.addTab(self._active_brake_tab, "Active Brake")
         tabs.addTab(self._settings_tab, "Settings")
+        tabs.addTab(self._about_tab, "About")
         self.setCentralWidget(tabs)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
-        """Ensure HID sessions are closed before the window shuts down."""
-        try:
-            self._pedals_session.close()
-            self._wheel_session.close()
-        finally:
-            super().closeEvent(event)
-
-    def _build_telemetry_tab(self) -> QWidget:
-        """Create the live telemetry tab with controls and chart."""
-        self._throttle_target_slider = self._create_target_slider(
-            default=_DEFAULT_THROTTLE_TARGET,
-            object_name="throttleTargetSlider",
-        )
-        throttle_target_row = self._create_slider_row(
-            self._throttle_target_slider,
-            label_name="throttleTargetValue",
-            initial_text=f"{_DEFAULT_THROTTLE_TARGET}%",
-        )
-
-        self._brake_target_slider = self._create_target_slider(
-            default=_DEFAULT_BRAKE_TARGET,
-            object_name="brakeTargetSlider",
-        )
-        brake_target_row = self._create_slider_row(
-            self._brake_target_slider,
-            label_name="brakeTargetValue",
-            initial_text=f"{_DEFAULT_BRAKE_TARGET}%",
-        )
-
-        self._grid_step_slider = self._create_grid_slider()
-        grid_row = self._create_slider_row(
-            self._grid_step_slider,
-            label_name="gridStepValue",
-            initial_text=f"{_DEFAULT_GRID_STEP}%",
-        )
-
-        self._show_steering_checkbox = QCheckBox("Show steering trace")
-        self._show_steering_checkbox.setChecked(self._show_steering)
-        self._show_steering_checkbox.stateChanged.connect(self._on_show_steering_changed)
-
-        self._start_button = QPushButton("Start")
-        self._start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self._start_button.clicked.connect(self.toggle_stream)
-        self._reset_button = QPushButton("Reset")
-        self._reset_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
-        self._reset_button.clicked.connect(self.reset_chart)
-
-        from PySide6.QtWidgets import QFormLayout
-        controls = QFormLayout()
-        controls.addRow("Throttle target", throttle_target_row)
-        controls.addRow("Brake target", brake_target_row)
-        controls.addRow("Grid division", grid_row)
-        controls.addRow("", self._show_steering_checkbox)
-        controls.addRow("Update rate", self._update_rate_row)
-
-        control_bar = QHBoxLayout()
-        control_bar.addStretch()
-        control_bar.addWidget(self._start_button)
-        control_bar.addWidget(self._reset_button)
-        control_bar.addStretch()
-
-        self._telemetry_chart = TelemetryChart(max_points=self._max_points)
-        self._on_grid_step_changed()
-        self._telemetry_chart.set_steering_visible(self._show_steering)
-
-        self._throttle_bar_label = QLabel("0%")
-        self._throttle_bar_label.setObjectName("throttleBarLabel")
-        self._brake_bar_label = QLabel("0%")
-        self._brake_bar_label.setObjectName("brakeBarLabel")
-
-        self._throttle_bar = self._create_vertical_progress_bar("throttleBar")
-        self._brake_bar = self._create_vertical_progress_bar("brakeBar")
-
-        bar_labels = QHBoxLayout()
-        bar_labels.setContentsMargins(0, 0, 0, 0)
-        bar_labels.setSpacing(12)
-        bar_labels.addWidget(self._throttle_bar_label, alignment=Qt.AlignHCenter)
-        bar_labels.addWidget(self._brake_bar_label, alignment=Qt.AlignHCenter)
-
-        bar_columns = QHBoxLayout()
-        bar_columns.setContentsMargins(0, 0, 0, 0)
-        bar_columns.setSpacing(12)
-        bar_columns.addWidget(self._throttle_bar)
-        bar_columns.addWidget(self._brake_bar)
-
-        bars_stack = QVBoxLayout()
-        bars_stack.setContentsMargins(12, 0, 0, 0)
-        bars_stack.setSpacing(6)
-        bars_stack.addLayout(bar_labels)
-        bars_stack.addLayout(bar_columns, stretch=1)
-        bars_container = QWidget()
-        bars_container.setLayout(bars_stack)
-        bars_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-
-        chart_row = QHBoxLayout()
-        chart_row.addWidget(self._telemetry_chart.view, stretch=1)
-        chart_row.addWidget(bars_container)
-
-        layout = QVBoxLayout()
-        layout.addLayout(controls)
-        layout.addLayout(control_bar)
-        layout.addLayout(chart_row, stretch=1)
-
-        container = QWidget()
-        container.setLayout(layout)
-        return container
-
-    def _build_static_brake_tab(self) -> QWidget:
-        """Create the Static Brake training tab."""
-        return StaticBrakeTab(read_brake_percent=self._read_brake_for_static_tab)
-
-    def _build_active_brake_tab(self) -> QWidget:
-        """Create the Active Brake training tab."""
-        return ActiveBrakeTab(read_brake_percent=self._read_brake_for_active_tab)
+        """Ensure HID sessions are closed and settings saved before shutdown."""
+        self._save_ui_settings()
+        self._settings_tab.close_sessions()
+        super().closeEvent(event)
 
     def _read_brake_for_active_tab(self) -> float:
         """Provide live brake input to the Active Brake tab.
@@ -261,7 +149,7 @@ class MainWindow(QMainWindow):
         return float(sample.brake)
 
     def _read_brake_for_static_tab(self) -> float:
-        """Provide live brake input to Static Brake tab.
+        """Provide live brake input to Trail Brake tab.
 
         Works even when the main telemetry timer is paused.
         """
@@ -279,8 +167,8 @@ class MainWindow(QMainWindow):
 
     def _on_settings_grid_step_changed(self, step: int) -> None:
         """Handle grid step changes from SettingsTab."""
-        if hasattr(self, "_telemetry_chart"):
-            self._telemetry_chart.set_grid_step(step_percent=step)
+        if hasattr(self, "_telemetry_tab"):
+            self._telemetry_tab.set_grid_step(step)
 
     def _on_settings_update_rate_changed(self, hz: int) -> None:
         """Handle update rate changes from SettingsTab."""
@@ -291,62 +179,21 @@ class MainWindow(QMainWindow):
         self._set_show_steering(visible, update_checkbox=True)
 
     # -------------------------------------------------------------------------
-    # UI event handlers
-    # -------------------------------------------------------------------------
-
-    def _on_update_rate_changed(self) -> None:
-        """Handle slider changes by applying and persisting new update rate."""
-        value = int(self._update_rate_slider.value())
-        self._update_rate_label.setText(f"{value} Hz")
-        self._set_update_rate(value)
-        self._schedule_save_ui_settings()
-
-    def _on_show_steering_changed(self) -> None:
-        """Toggle steering visibility and persist the setting."""
-        self._show_steering = self._show_steering_checkbox.isChecked()
-        self._telemetry_chart.set_steering_visible(self._show_steering)
-        self._schedule_save_ui_settings()
-
-    def _create_update_rate_row(self) -> QWidget:
-        """Build the update rate slider + label UI row."""
-        self._update_rate_slider = QSlider(Qt.Horizontal)
-        self._update_rate_slider.setRange(5, 120)
-        self._update_rate_slider.setTickInterval(5)
-        self._update_rate_slider.setTickPosition(QSlider.TicksBelow)
-        self._update_rate_slider.setSingleStep(1)
-        self._update_rate_slider.setPageStep(5)
-        self._update_rate_slider.setValue(self._update_rate)
-        self._update_rate_slider.valueChanged.connect(self._on_update_rate_changed)
-
-        self._update_rate_label = QLabel(f"{self._update_rate} Hz")
-        self._update_rate_label.setMinimumWidth(48)
-
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self._update_rate_slider, stretch=1)
-        layout.addWidget(self._update_rate_label)
-        return row
-            
-    # -------------------------------------------------------------------------
     # Core functionality
     # -------------------------------------------------------------------------
 
-    def toggle_stream(self) -> None:
-        """Start or pause the main telemetry timer."""
-        if self._timer.isActive():
-            self._timer.stop()
-            self._start_button.setText("Start")
-            self._start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        else:
+    def _on_telemetry_start_stop(self, start: bool) -> None:
+        """Handle start/stop from telemetry tab."""
+        if start:
             self._timer.start()
-            self._start_button.setText("Pause")
-            self._start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
+            self._telemetry_tab.set_streaming(True)
+        else:
+            self._timer.stop()
+            self._telemetry_tab.set_streaming(False)
 
-    def reset_chart(self) -> None:
-        """Clear the telemetry chart and reset state."""
-        self._telemetry_chart.reset()
-        self._update_bars(TelemetrySample(throttle=0.0, brake=0.0, steering=0.0))
+    def _on_telemetry_reset(self) -> None:
+        """Handle reset from telemetry tab."""
+        self._telemetry_tab.reset()
         self._throttle_target_hit = False
         self._brake_target_hit = False
         self._update_status()
@@ -355,32 +202,16 @@ class MainWindow(QMainWindow):
         """Timer tick: read inputs, update charts, play sounds, and status."""
         sample = self._read_inputs()
         self._last_sample = sample
-        self._telemetry_chart.append(sample)
-        self._telemetry_chart.set_targets(
-            throttle_target=float(self._throttle_target_slider.value()),
-            brake_target=float(self._brake_target_slider.value()),
-        )
-        self._update_bars(sample)
+        self._telemetry_tab.append_sample(sample)
         self._maybe_play_target_sound(sample)
         self._update_status()
-
-    def _on_grid_step_changed(self) -> None:
-        """Update the telemetry grid step when the slider changes."""
-        step = snap_to_step(self._grid_step_slider.value(), 5)
-        step = clamp_int(step, 5, 50)
-        if step != self._grid_step_slider.value():
-            self._grid_step_slider.blockSignals(True)
-            self._grid_step_slider.setValue(step)
-            self._grid_step_slider.blockSignals(False)
-        self._update_grid_step_label(step)
-        self._telemetry_chart.set_grid_step(step_percent=step)
 
     def _schedule_save_ui_settings(self) -> None:
         """Debounce UI settings save to avoid excessive writes."""
         self._ui_save_timer.start(_UI_SAVE_DEBOUNCE_MS)
 
     def _set_update_rate(self, hz: int, *, update_spin: bool = False) -> None:
-        """Apply the requested update rate to timers and sync UI controls."""
+        """Apply the requested update rate to timers."""
         hz = clamp_int(hz, 5, 120)
         interval_ms = max(1, int(1000 / hz))
         self._update_rate = hz
@@ -390,53 +221,33 @@ class MainWindow(QMainWindow):
                 self._active_brake_tab.set_update_rate(hz)
             except Exception:
                 pass
-        if update_spin and hasattr(self, "_update_rate_slider"):
-            self._update_rate_slider.blockSignals(True)
-            self._update_rate_slider.setValue(hz)
-            self._update_rate_slider.blockSignals(False)
-        if hasattr(self, "_update_rate_label"):
-            self._update_rate_label.setText(f"{hz} Hz")
 
     def _set_show_steering(self, visible: bool, *, update_checkbox: bool = False) -> None:
-        """Apply steering visibility to the chart and sync the checkbox."""
+        """Apply steering visibility to the chart."""
         self._show_steering = bool(visible)
-        if hasattr(self, "_telemetry_chart"):
-            self._telemetry_chart.set_steering_visible(self._show_steering)
-        if update_checkbox and hasattr(self, "_show_steering_checkbox"):
-            self._show_steering_checkbox.blockSignals(True)
-            self._show_steering_checkbox.setChecked(self._show_steering)
-            self._show_steering_checkbox.blockSignals(False)
+        if hasattr(self, "_telemetry_tab"):
+            self._telemetry_tab.set_steering_visible(self._show_steering)
 
     def _set_grid_step(self, step_percent: int) -> None:
-        """Set the telemetry grid step via the slider, snapping to 5% increments."""
+        """Set the telemetry grid step, snapping to 5% increments."""
         step_percent = snap_to_step(clamp_int(step_percent, 5, 50), 5)
-        if hasattr(self, "_grid_step_slider"):
-            try:
-                self._grid_step_slider.blockSignals(True)
-                self._grid_step_slider.setValue(step_percent)
-            finally:
-                self._grid_step_slider.blockSignals(False)
-        self._update_grid_step_label(step_percent)
-        if hasattr(self, "_telemetry_chart"):
-            self._telemetry_chart.set_grid_step(step_percent=step_percent)
-
-    def _update_grid_step_label(self, step_percent: int) -> None:
-        """Update the grid step label text."""
-        if hasattr(self, "_grid_step_label"):
-            self._grid_step_label.setText(f"{int(step_percent)}%")
+        if hasattr(self, "_telemetry_tab"):
+            self._telemetry_tab.set_grid_step(step_percent)
 
     def _save_ui_settings(self) -> None:
-        """Persist UI-related settings (targets, grid, update rate)."""
+        """Persist UI-related settings (targets, grid, update rate, window size)."""
         cfg = UiConfig(
-            throttle_target=int(self._throttle_target_slider.value()),
-            brake_target=int(self._brake_target_slider.value()),
-            grid_step_percent=int(self._grid_step_slider.value()),
-            update_hz=int(self._update_rate_slider.value()),
-            show_steering=bool(self._show_steering_checkbox.isChecked()),
+            throttle_target=self._telemetry_tab.throttle_target,
+            brake_target=self._telemetry_tab.brake_target,
+            grid_step_percent=self._telemetry_tab.grid_step,
+            update_hz=self._update_rate,
+            show_steering=self._show_steering,
             throttle_sound_enabled=self._settings_tab.sound_enabled("throttle"),
             throttle_sound_path=self._settings_tab.resolve_sound_path("throttle"),
             brake_sound_enabled=self._settings_tab.sound_enabled("brake"),
             brake_sound_path=self._settings_tab.resolve_sound_path("brake"),
+            window_width=self.width(),
+            window_height=self.height(),
         )
         save_ui_config(cfg)
 
@@ -445,23 +256,24 @@ class MainWindow(QMainWindow):
         try:
             ui_cfg = load_ui_config()
             if ui_cfg:
-                self._throttle_target_slider.setValue(clamp_int(ui_cfg.throttle_target, 0, 100))
-                self._brake_target_slider.setValue(clamp_int(ui_cfg.brake_target, 0, 100))
+                self._telemetry_tab.set_throttle_target(ui_cfg.throttle_target)
+                self._telemetry_tab.set_brake_target(ui_cfg.brake_target)
                 self._set_grid_step(ui_cfg.grid_step_percent)
-                self._set_update_rate(ui_cfg.update_hz, update_spin=True)
-                self._set_show_steering(ui_cfg.show_steering, update_checkbox=True)
+                self._set_update_rate(ui_cfg.update_hz)
+                self._set_show_steering(ui_cfg.show_steering)
                 self._settings_tab.apply_sound_settings(
                     throttle_enabled=ui_cfg.throttle_sound_enabled,
                     throttle_path=ui_cfg.throttle_sound_path,
                     brake_enabled=ui_cfg.brake_sound_enabled,
                     brake_path=ui_cfg.brake_sound_path,
                 )
+                self.resize(ui_cfg.window_width, ui_cfg.window_height)
             else:
-                self._set_update_rate(self._update_rate, update_spin=True)
-                self._set_show_steering(self._show_steering, update_checkbox=True)
+                self._set_update_rate(self._update_rate)
+                self._set_show_steering(self._show_steering)
         except Exception:
-            self._set_update_rate(self._update_rate, update_spin=True)
-            self._set_show_steering(self._show_steering, update_checkbox=True)
+            self._set_update_rate(self._update_rate)
+            self._set_show_steering(self._show_steering)
 
     def _update_status(self) -> None:
         """Update the status bar with current device usage."""
@@ -479,8 +291,8 @@ class MainWindow(QMainWindow):
 
     def _maybe_play_target_sound(self, sample: TelemetrySample) -> None:
         """Play sounds when throttle/brake cross their targets."""
-        throttle_target = float(self._throttle_target_slider.value())
-        brake_target = float(self._brake_target_slider.value())
+        throttle_target = float(self._telemetry_tab.throttle_target)
+        brake_target = float(self._telemetry_tab.brake_target)
         self._update_target_flag(sample.throttle, throttle_target, "_throttle_target_hit", "throttle")
         self._update_target_flag(sample.brake, brake_target, "_brake_target_hit", "brake")
 
@@ -500,15 +312,6 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------------------
     # Input handling
     # -------------------------------------------------------------------------
-
-    def _update_bars(self, sample: TelemetrySample) -> None:
-        """Update the vertical bar indicators beside the telemetry chart."""
-        throttle_val = int(clamp(sample.throttle, 0.0, 100.0))
-        brake_val = int(clamp(sample.brake, 0.0, 100.0))
-        self._throttle_bar.setValue(throttle_val)
-        self._brake_bar.setValue(brake_val)
-        self._throttle_bar_label.setText(f"{throttle_val}%")
-        self._brake_bar_label.setText(f"{brake_val}%")
 
     def _read_inputs(self) -> TelemetrySample:
         """Poll pedals + wheel devices (if available); otherwise use simulated data."""
@@ -579,70 +382,6 @@ class MainWindow(QMainWindow):
             return prev
         smoothed = prev + self._steering_alpha * delta
         return clamp(smoothed, -100.0, 100.0)
-
-    # -------------------------------------------------------------------------
-    # Helper methods for UI construction
-    # -------------------------------------------------------------------------
-
-    def _create_target_slider(
-        self, *, default: int, object_name: str
-    ) -> QSlider:
-        """Create a target percentage slider (0-100%)."""
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(0, 100)
-        slider.setSingleStep(1)
-        slider.setPageStep(5)
-        slider.setTickInterval(10)
-        slider.setTickPosition(QSlider.TicksBelow)
-        slider.setValue(default)
-        slider.setObjectName(object_name)
-        slider.valueChanged.connect(self._schedule_save_ui_settings)
-        return slider
-
-    def _create_slider_row(
-        self, slider: QSlider, *, label_name: str, initial_text: str
-    ) -> QWidget:
-        """Create a row with a slider and value label."""
-        label = QLabel(initial_text)
-        label.setObjectName(label_name)
-        label.setMinimumWidth(52)
-        slider.valueChanged.connect(lambda v: label.setText(f"{int(v)}%"))
-
-        # Store reference to label for grid step updates
-        if "grid" in label_name.lower():
-            self._grid_step_label = label
-
-        row = QWidget()
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(slider, stretch=1)
-        layout.addWidget(label)
-        return row
-
-    def _create_grid_slider(self) -> QSlider:
-        """Create the grid step slider."""
-        slider = QSlider(Qt.Horizontal)
-        slider.setRange(5, 50)
-        slider.setSingleStep(5)
-        slider.setPageStep(5)
-        slider.setTickInterval(5)
-        slider.setTickPosition(QSlider.TicksBelow)
-        slider.setValue(_DEFAULT_GRID_STEP)
-        slider.valueChanged.connect(self._on_grid_step_changed)
-        slider.valueChanged.connect(self._schedule_save_ui_settings)
-        return slider
-
-    def _create_vertical_progress_bar(self, object_name: str) -> QProgressBar:
-        """Create a vertical progress bar for input visualization."""
-        bar = QProgressBar()
-        bar.setOrientation(Qt.Vertical)
-        bar.setRange(0, 100)
-        bar.setValue(0)
-        bar.setTextVisible(False)
-        bar.setObjectName(object_name)
-        bar.setFixedWidth(28)
-        bar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        return bar
 
     # -------------------------------------------------------------------------
     # Cleanup
