@@ -6,6 +6,18 @@ A PySide6 desktop application for sim racers to practice throttle, brake, and st
 ![PySide6](https://img.shields.io/badge/PySide6-6.7+-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
+## Screenshots
+
+| Telemetry | Static Brake Training |
+|:---------:|:---------------------:|
+| ![Telemetry](screenshots/main_telemetry.png) | ![Static Brake](screenshots/static_brake_training.png) |
+
+| Active Brake Training | Settings |
+|:---------------------:|:--------:|
+| ![Active Brake](screenshots/active_brake_training.png) | ![Settings](screenshots/settings.png) |
+
+And more to come...
+
 ## Table of Contents
 
 - [Features](#features)
