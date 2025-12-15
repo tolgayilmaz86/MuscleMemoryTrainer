@@ -7,7 +7,6 @@ lives here, separate from the main window orchestration.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -41,6 +40,28 @@ from mmt_app.config import (
     save_ui_config,
 )
 from mmt_app.input.hid_backend import HidSession, HidDeviceInfo, hid_available, enumerate_devices
+from mmt_app.input.calibration import (
+    CalibrationState,
+    SteeringCalibrationState,
+    compute_best_offset,
+    variance,
+    detect_report_length,
+    read_steering_value,
+    CALIBRATION_DURATION_MS,
+    STEERING_CAPTURE_MS,
+    MAX_READS_PER_TICK,
+)
+from mmt_app.input.device_mgr import (
+    DeviceManager,
+    format_device_label,
+    DEFAULT_PEDALS_REPORT_LEN,
+    DEFAULT_WHEEL_REPORT_LEN,
+    DEFAULT_THROTTLE_OFFSET,
+    DEFAULT_BRAKE_OFFSET,
+    DEFAULT_STEERING_OFFSET,
+    DEFAULT_STEERING_CENTER,
+    DEFAULT_STEERING_RANGE,
+)
 from mmt_app.ui.utils import clamp_int, resource_path
 
 if TYPE_CHECKING:
@@ -49,36 +70,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-
-_CALIBRATION_DURATION_MS: int = 2000
-"""Duration (ms) for each calibration sample capture phase."""
-
-_STEERING_CAPTURE_MS: int = 3000
-"""Duration (ms) for each steering calibration stage."""
-
-_DEFAULT_PEDALS_REPORT_LEN: int = 4
-"""Default expected byte length for pedal HID reports."""
-
-_DEFAULT_WHEEL_REPORT_LEN: int = 8
-"""Default expected byte length for wheel HID reports."""
-
-_DEFAULT_THROTTLE_OFFSET: int = 1
-"""Default byte offset for throttle axis in pedal reports."""
-
-_DEFAULT_BRAKE_OFFSET: int = 2
-"""Default byte offset for brake axis in pedal reports."""
-
-_DEFAULT_STEERING_OFFSET: int = 0
-"""Default byte offset for steering axis in wheel reports."""
-
-_DEFAULT_STEERING_CENTER: int = 128
-"""Default center value for steering calibration (8-bit mid-point)."""
-
-_DEFAULT_STEERING_RANGE: int = 900
-"""Default wheel rotation in degrees (180-1080)."""
-
-_MAX_READS_PER_TICK: int = 50
-"""Maximum HID reads per tick to drain the buffer."""
 
 _UI_SAVE_DEBOUNCE_MS: int = 500
 """Debounce interval (ms) for persisting UI settings."""
@@ -236,22 +227,20 @@ class SettingsTab(QWidget):
 
     def _init_calibration_state(self) -> None:
         """Initialize calibration-related state variables."""
-        self._calibration_device: str | None = None
-        self._calibration_axis: str | None = None
-        self._calibration_callback: Callable[[str, int, float], None] | None = None
-        self._baseline_samples: list[bytes] = []
-        self._active_samples: list[bytes] = []
+        self._calibration_state = CalibrationState()
         self._pending_pedal_wizard: list[str] = []
+        # Setup wizard state
+        self._setup_wizard_dialog: QDialog | None = None
+        self._setup_wizard_label: QLabel | None = None
+        self._setup_wizard_step: int = 0
+        self._setup_wizard_steps: list[dict] = []
 
     def _init_steering_state(self) -> None:
         """Initialize steering calibration state variables."""
-        self._steering_center: int = _DEFAULT_STEERING_CENTER
-        self._steering_range: int = _DEFAULT_STEERING_RANGE
-        self._steering_center_samples: list[int] = []
-        self._steering_left_samples: list[int] = []
-        self._steering_right_samples: list[int] = []
-        self._steering_pending_stage: str | None = None
-        self._steering_cal_stage: str | None = None
+        self._steering_state = SteeringCalibrationState(
+            center=DEFAULT_STEERING_CENTER,
+            range_degrees=DEFAULT_STEERING_RANGE,
+        )
         self._steering_cal_dialog: QDialog | None = None
         self._steering_cal_label: QLabel | None = None
         self._steering_cal_start_btn: QPushButton | None = None
@@ -333,22 +322,10 @@ class SettingsTab(QWidget):
         self._pedals_device_combo.setMinimumWidth(280)
         form.addRow("Pedals HID:", self._pedals_device_combo)
 
-        # Pedals report length
-        self._pedals_report_len = QSpinBox()
-        self._pedals_report_len.setRange(1, 64)
-        self._pedals_report_len.setValue(_DEFAULT_PEDALS_REPORT_LEN)
-        form.addRow("Pedals report length:", self._pedals_report_len)
-
         # Wheel device combo
         self._wheel_device_combo = QComboBox()
         self._wheel_device_combo.setMinimumWidth(280)
         form.addRow("Wheel HID:", self._wheel_device_combo)
-
-        # Wheel report length
-        self._wheel_report_len = QSpinBox()
-        self._wheel_report_len.setRange(1, 64)
-        self._wheel_report_len.setValue(_DEFAULT_WHEEL_REPORT_LEN)
-        form.addRow("Wheel report length:", self._wheel_report_len)
 
         # Refresh button row
         btn_row = QWidget()
@@ -368,44 +345,31 @@ class SettingsTab(QWidget):
     def _build_calibration_group(self) -> QGroupBox:
         """Build the calibration settings group box."""
         group = QGroupBox("Calibration")
-        form = QFormLayout(group)
+        layout = QVBoxLayout(group)
 
-        # Throttle offset
-        self._throttle_offset = QSpinBox()
-        self._throttle_offset.setRange(0, 63)
-        self._throttle_offset.setValue(_DEFAULT_THROTTLE_OFFSET)
-        form.addRow("Throttle byte offset:", self._throttle_offset)
+        # Setup wizard and set center buttons - prominent at top
+        wizard_row = QWidget()
+        wizard_layout = QHBoxLayout(wizard_row)
+        wizard_layout.setContentsMargins(0, 0, 0, 0)
 
-        # Brake offset
-        self._brake_offset = QSpinBox()
-        self._brake_offset.setRange(0, 63)
-        self._brake_offset.setValue(_DEFAULT_BRAKE_OFFSET)
-        form.addRow("Brake byte offset:", self._brake_offset)
+        setup_wizard_btn = QPushButton("🔧 Input Setup Wizard")
+        setup_wizard_btn.setToolTip("Auto-detect pedal and wheel settings - recommended for first-time setup")
+        setup_wizard_btn.clicked.connect(self._start_input_setup_wizard)
+        setup_wizard_btn.setMinimumHeight(32)
 
-        # Steering offset
-        self._steering_offset = QSpinBox()
-        self._steering_offset.setRange(0, 63)
-        self._steering_offset.setValue(_DEFAULT_STEERING_OFFSET)
-        form.addRow("Steering byte offset:", self._steering_offset)
-
-        # Manual steering center/range spinboxes
-        steering_manual_row = QWidget()
-        steering_manual_layout = QHBoxLayout(steering_manual_row)
-        steering_manual_layout.setContentsMargins(0, 0, 0, 0)
-
-        self._steering_center_value_label = QLabel(f"{_DEFAULT_STEERING_CENTER}")
-        self._steering_center_value_label.setMinimumWidth(30)
-
-        set_center_btn = QPushButton("Set Center")
+        set_center_btn = QPushButton("🎯 Set Steering Center")
         set_center_btn.setToolTip("Hold wheel centered and click to capture center position")
         set_center_btn.clicked.connect(self._set_steering_center_from_wheel)
+        set_center_btn.setMinimumHeight(32)
 
-        steering_manual_layout.addWidget(QLabel("Center:"))
-        steering_manual_layout.addWidget(self._steering_center_value_label)
-        steering_manual_layout.addWidget(set_center_btn)
-        steering_manual_layout.addStretch()
+        wizard_layout.addWidget(setup_wizard_btn)
+        wizard_layout.addWidget(set_center_btn)
+        wizard_layout.addStretch()
+        layout.addWidget(wizard_row)
 
-        form.addRow("Steering center:", steering_manual_row)
+        # User-friendly settings
+        form = QFormLayout()
+        layout.addLayout(form)
 
         # Steering range slider (degrees of wheel rotation)
         self._steering_range_slider = QSlider(Qt.Horizontal)
@@ -415,10 +379,10 @@ class SettingsTab(QWidget):
         self._steering_range_slider.setPageStep(90)
         self._steering_range_slider.setTickInterval(90)
         self._steering_range_slider.setTickPosition(QSlider.TicksBelow)
-        self._steering_range_slider.setValue(_DEFAULT_STEERING_RANGE)
+        self._steering_range_slider.setValue(DEFAULT_STEERING_RANGE)
         self._steering_range_slider.valueChanged.connect(self._on_steering_range_changed)
 
-        self._steering_range_label = QLabel(f"{_DEFAULT_STEERING_RANGE}°")
+        self._steering_range_label = QLabel(f"{DEFAULT_STEERING_RANGE}°")
         self._steering_range_label.setObjectName("steeringRangeValue")
         self._steering_range_label.setStyleSheet("color: #f97316;")
         self._steering_range_label.setMinimumWidth(52)
@@ -434,24 +398,54 @@ class SettingsTab(QWidget):
 
         form.addRow("Wheel rotation:", steering_range_row)
 
-        # Calibration buttons row
-        cal_btn_row = QWidget()
-        cal_btn_layout = QHBoxLayout(cal_btn_row)
-        cal_btn_layout.setContentsMargins(0, 0, 0, 0)
+        # Advanced settings (collapsible)
+        self._advanced_checkbox = QCheckBox("Show advanced settings")
+        self._advanced_checkbox.setChecked(False)
+        self._advanced_checkbox.stateChanged.connect(self._toggle_advanced_settings)
+        layout.addWidget(self._advanced_checkbox)
 
-        auto_pedal_btn = QPushButton("Auto Pedal Offsets")
-        auto_pedal_btn.clicked.connect(self._start_pedal_offset_wizard)
+        self._advanced_widget = QWidget()
+        advanced_form = QFormLayout(self._advanced_widget)
+        advanced_form.setContentsMargins(0, 0, 0, 0)
 
-        cal_steering_btn = QPushButton("Calibrate Steering")
-        cal_steering_btn.clicked.connect(self.calibrate_steering_range)
+        # Pedals report length
+        self._pedals_report_len = QSpinBox()
+        self._pedals_report_len.setRange(1, 64)
+        self._pedals_report_len.setValue(DEFAULT_PEDALS_REPORT_LEN)
+        advanced_form.addRow("Pedals report length:", self._pedals_report_len)
 
-        cal_btn_layout.addWidget(auto_pedal_btn)
-        cal_btn_layout.addWidget(cal_steering_btn)
-        cal_btn_layout.addStretch()
+        # Wheel report length
+        self._wheel_report_len = QSpinBox()
+        self._wheel_report_len.setRange(1, 64)
+        self._wheel_report_len.setValue(DEFAULT_WHEEL_REPORT_LEN)
+        advanced_form.addRow("Wheel report length:", self._wheel_report_len)
 
-        form.addRow("", cal_btn_row)
+        # Throttle offset
+        self._throttle_offset = QSpinBox()
+        self._throttle_offset.setRange(0, 63)
+        self._throttle_offset.setValue(DEFAULT_THROTTLE_OFFSET)
+        advanced_form.addRow("Throttle byte offset:", self._throttle_offset)
+
+        # Brake offset
+        self._brake_offset = QSpinBox()
+        self._brake_offset.setRange(0, 63)
+        self._brake_offset.setValue(DEFAULT_BRAKE_OFFSET)
+        advanced_form.addRow("Brake byte offset:", self._brake_offset)
+
+        # Steering offset
+        self._steering_offset = QSpinBox()
+        self._steering_offset.setRange(0, 63)
+        self._steering_offset.setValue(DEFAULT_STEERING_OFFSET)
+        advanced_form.addRow("Steering byte offset:", self._steering_offset)
+
+        self._advanced_widget.setVisible(False)
+        layout.addWidget(self._advanced_widget)
 
         return group
+
+    def _toggle_advanced_settings(self, state: int) -> None:
+        """Toggle visibility of advanced calibration settings."""
+        self._advanced_widget.setVisible(state == Qt.Checked)
 
     def _build_sound_group(self) -> QGroupBox:
         """Build the sound settings group box."""
@@ -720,7 +714,6 @@ class SettingsTab(QWidget):
             self._wheel_report_len.setValue(wheel_cfg.report_len)
             self._steering_offset.setValue(wheel_cfg.steering_offset)
             self._steering_center = wheel_cfg.steering_center
-            self._steering_center_value_label.setText(str(wheel_cfg.steering_center))
             # Clamp steering range to slider bounds (180-1080 degrees)
             clamped_range = max(180, min(1080, wheel_cfg.steering_range))
             self._steering_range = clamped_range
@@ -780,14 +773,14 @@ class SettingsTab(QWidget):
 
         self._set_status(f"Calibrating {axis}: release all pedals/wheel for 2 seconds...")
         self._calibration_timer.start()
-        QTimer.singleShot(_CALIBRATION_DURATION_MS, self._switch_to_active_capture)
+        QTimer.singleShot(CALIBRATION_DURATION_MS, self._switch_to_active_capture)
 
     def _switch_to_active_capture(self) -> None:
         """Transition from baseline capture to active capture."""
         self._set_status(
             f"Now press/move the {self._calibration_axis} input for 2 seconds..."
         )
-        QTimer.singleShot(_CALIBRATION_DURATION_MS, self._finish_calibration)
+        QTimer.singleShot(CALIBRATION_DURATION_MS, self._finish_calibration)
 
     def _finish_calibration(self) -> None:
         """Complete calibration and compute the best offset."""
@@ -841,7 +834,7 @@ class SettingsTab(QWidget):
             else self._wheel_report_len.value()
         )
         report = session.read_latest_report(
-            report_len=report_len, max_reads=_MAX_READS_PER_TICK
+            report_len=report_len, max_reads=MAX_READS_PER_TICK
         )
         if report is None:
             return
@@ -931,6 +924,247 @@ class SettingsTab(QWidget):
         QTimer.singleShot(300, self._run_next_pedal_wizard_step)
 
     # -------------------------------------------------------------------------
+    # Input Setup Wizard
+    # -------------------------------------------------------------------------
+
+    def _start_input_setup_wizard(self) -> None:
+        """Start the comprehensive input setup wizard."""
+        if not self._pedals_session.is_open and not self._wheel_session.is_open:
+            self._set_status("Select pedals and/or wheel HID device first, then click Apply.")
+            return
+        if self._calibration_device or self._calibration_axis:
+            self._set_status("Calibration already running. Please wait.")
+            return
+
+        # Build wizard steps based on connected devices
+        self._setup_wizard_steps = []
+        
+        if self._pedals_session.is_open:
+            self._setup_wizard_steps.append({
+                "type": "detect_report_len",
+                "device": "pedals",
+                "title": "Detecting Pedals",
+                "instruction": "Keep all pedals RELEASED.\n\nDetecting report length...",
+            })
+            self._setup_wizard_steps.append({
+                "type": "detect_axis",
+                "device": "pedals",
+                "axis": "throttle",
+                "title": "Throttle Pedal",
+                "instruction": "Keep brake RELEASED.\n\nSlowly press and release THROTTLE several times.",
+            })
+            self._setup_wizard_steps.append({
+                "type": "detect_axis",
+                "device": "pedals",
+                "axis": "brake",
+                "title": "Brake Pedal",
+                "instruction": "Keep throttle RELEASED.\n\nSlowly press and release BRAKE several times.",
+            })
+
+        if self._wheel_session.is_open:
+            self._setup_wizard_steps.append({
+                "type": "detect_report_len",
+                "device": "wheel",
+                "title": "Detecting Wheel",
+                "instruction": "Keep wheel CENTERED and still.\n\nDetecting report length...",
+            })
+            self._setup_wizard_steps.append({
+                "type": "detect_axis",
+                "device": "wheel",
+                "axis": "steering",
+                "title": "Steering Wheel",
+                "instruction": "Slowly turn wheel LEFT and RIGHT several times.\n\nFull rotation not required.",
+            })
+            self._setup_wizard_steps.append({
+                "type": "set_center",
+                "device": "wheel",
+                "title": "Steering Center",
+                "instruction": "Hold wheel perfectly CENTERED.\n\nClick Next when ready.",
+            })
+
+        if not self._setup_wizard_steps:
+            self._set_status("No devices connected.")
+            return
+
+        self._setup_wizard_step = 0
+        self._show_setup_wizard_dialog()
+
+    def _show_setup_wizard_dialog(self) -> None:
+        """Show or update the setup wizard dialog."""
+        if self._setup_wizard_dialog is None:
+            self._setup_wizard_dialog = QDialog(self)
+            self._setup_wizard_dialog.setWindowTitle("Input Setup Wizard")
+            self._setup_wizard_dialog.setModal(True)
+            self._setup_wizard_dialog.setMinimumWidth(400)
+            self._setup_wizard_dialog.setMinimumHeight(200)
+
+            layout = QVBoxLayout(self._setup_wizard_dialog)
+
+            self._setup_wizard_label = QLabel()
+            self._setup_wizard_label.setAlignment(Qt.AlignCenter)
+            self._setup_wizard_label.setWordWrap(True)
+            self._setup_wizard_label.setStyleSheet("font-size: 14px; padding: 20px;")
+            layout.addWidget(self._setup_wizard_label)
+
+            layout.addStretch()
+
+            btn_layout = QHBoxLayout()
+            
+            cancel_btn = QPushButton("Cancel")
+            cancel_btn.clicked.connect(self._cancel_setup_wizard)
+            btn_layout.addWidget(cancel_btn)
+            
+            btn_layout.addStretch()
+            
+            self._setup_wizard_next_btn = QPushButton("Next")
+            self._setup_wizard_next_btn.clicked.connect(self._advance_setup_wizard)
+            btn_layout.addWidget(self._setup_wizard_next_btn)
+
+            layout.addLayout(btn_layout)
+
+            self._setup_wizard_dialog.rejected.connect(self._cancel_setup_wizard)
+
+        self._run_current_wizard_step()
+        self._setup_wizard_dialog.show()
+
+    def _run_current_wizard_step(self) -> None:
+        """Execute the current wizard step."""
+        if self._setup_wizard_step >= len(self._setup_wizard_steps):
+            self._finish_setup_wizard()
+            return
+
+        step = self._setup_wizard_steps[self._setup_wizard_step]
+        step_num = self._setup_wizard_step + 1
+        total = len(self._setup_wizard_steps)
+        
+        self._setup_wizard_dialog.setWindowTitle(
+            f"Input Setup Wizard - Step {step_num}/{total}: {step['title']}"
+        )
+        self._setup_wizard_label.setText(step["instruction"])
+
+        step_type = step["type"]
+        
+        if step_type == "detect_report_len":
+            self._setup_wizard_next_btn.setEnabled(False)
+            self._setup_wizard_next_btn.setText("Detecting...")
+            QTimer.singleShot(500, lambda: self._detect_report_length(step))
+        elif step_type == "detect_axis":
+            self._setup_wizard_next_btn.setEnabled(False)
+            self._setup_wizard_next_btn.setText("Detecting...")
+            self._start_axis_detection(step)
+        elif step_type == "set_center":
+            self._setup_wizard_next_btn.setEnabled(True)
+            self._setup_wizard_next_btn.setText("Next")
+
+    def _detect_report_length(self, step: dict) -> None:
+        """Auto-detect the report length for a device."""
+        device = step["device"]
+        session = self._pedals_session if device == "pedals" else self._wheel_session
+        
+        if not session.is_open:
+            self._setup_wizard_label.setText("Device not connected!")
+            QTimer.singleShot(1000, self._advance_setup_wizard)
+            return
+
+        # Try reading with max length to see actual report size
+        max_len = 64
+        samples = []
+        for _ in range(10):
+            report = session.read_latest_report(report_len=max_len, max_reads=5)
+            if report:
+                samples.append(len(report))
+
+        if samples:
+            # Use the most common report length
+            report_len = max(set(samples), key=samples.count)
+            if device == "pedals":
+                self._pedals_report_len.setValue(report_len)
+            else:
+                self._wheel_report_len.setValue(report_len)
+            self._setup_wizard_label.setText(
+                f"Report length detected: {report_len} bytes\n\nContinuing..."
+            )
+        else:
+            self._setup_wizard_label.setText("Could not detect report length.\nUsing default.")
+
+        QTimer.singleShot(1000, self._advance_setup_wizard)
+
+    def _start_axis_detection(self, step: dict) -> None:
+        """Start detecting an axis offset."""
+        device = step["device"]
+        axis = step["axis"]
+        
+        self.start_calibration(
+            device, axis, on_complete=self._on_wizard_axis_detected
+        )
+
+    def _on_wizard_axis_detected(self, axis: str, offset: int, score: float) -> None:
+        """Handle axis detection completion in wizard."""
+        if score > 100:
+            self._setup_wizard_label.setText(
+                f"✓ {axis.capitalize()} detected at byte {offset}\n\nContinuing..."
+            )
+        else:
+            self._setup_wizard_label.setText(
+                f"⚠ {axis.capitalize()} detected at byte {offset}\n(low confidence - try again if needed)\n\nContinuing..."
+            )
+        QTimer.singleShot(1500, self._advance_setup_wizard)
+
+    def _advance_setup_wizard(self) -> None:
+        """Move to the next wizard step."""
+        step = self._setup_wizard_steps[self._setup_wizard_step] if self._setup_wizard_step < len(self._setup_wizard_steps) else None
+        
+        # Handle set_center step - capture center now
+        if step and step["type"] == "set_center":
+            self._capture_steering_center_for_wizard()
+
+        self._setup_wizard_step += 1
+        self._run_current_wizard_step()
+
+    def _capture_steering_center_for_wizard(self) -> None:
+        """Capture steering center position during wizard."""
+        if not self._wheel_session.is_open:
+            return
+
+        report = self._wheel_session.read_latest_report(
+            report_len=self._wheel_report_len.value(),
+            max_reads=MAX_READS_PER_TICK,
+        )
+        if not report:
+            return
+
+        s_off = self._steering_offset.value()
+        if s_off >= len(report):
+            return
+
+        center = int(report[s_off])
+        self._steering_center = center
+
+    def _finish_setup_wizard(self) -> None:
+        """Complete the setup wizard."""
+        if self._setup_wizard_dialog:
+            self._setup_wizard_dialog.close()
+            self._setup_wizard_dialog = None
+
+        try:
+            self.save_current_mapping()
+            self._set_status("Input setup complete! Settings saved.")
+        except Exception:
+            self._set_status("Input setup complete! Click Save to persist.")
+
+    def _cancel_setup_wizard(self) -> None:
+        """Cancel the setup wizard."""
+        self._calibration_timer.stop()
+        self._calibration_device = None
+        self._calibration_axis = None
+        
+        if self._setup_wizard_dialog:
+            self._setup_wizard_dialog.close()
+            self._setup_wizard_dialog = None
+        
+        self._set_status("Setup wizard canceled.")
+
+    # -------------------------------------------------------------------------
     # Steering calibration
     # -------------------------------------------------------------------------
 
@@ -997,7 +1231,7 @@ class SettingsTab(QWidget):
             self._steering_cal_start_btn.setEnabled(False)
 
         self._steering_cal_timer.start(20)
-        QTimer.singleShot(_STEERING_CAPTURE_MS, self._complete_steering_stage)
+        QTimer.singleShot(STEERING_CAPTURE_MS, self._complete_steering_stage)
 
     def _set_steering_dialog_text(self, text: str) -> None:
         """Update the steering calibration dialog text."""
@@ -1056,7 +1290,7 @@ class SettingsTab(QWidget):
 
         report = self._wheel_session.read_latest_report(
             report_len=self._wheel_report_len.value(),
-            max_reads=_MAX_READS_PER_TICK,
+            max_reads=MAX_READS_PER_TICK,
         )
         if not report:
             return
@@ -1090,7 +1324,6 @@ class SettingsTab(QWidget):
         )
 
         self._steering_center = center
-        self._steering_center_value_label.setText(str(center))
         self._update_steering_calibration_label()
 
         try:
@@ -1118,7 +1351,7 @@ class SettingsTab(QWidget):
 
         report = self._wheel_session.read_latest_report(
             report_len=self._wheel_report_len.value(),
-            max_reads=_MAX_READS_PER_TICK,
+            max_reads=MAX_READS_PER_TICK,
         )
         if not report:
             self._set_status("Could not read from wheel. Try again.")
@@ -1131,7 +1364,6 @@ class SettingsTab(QWidget):
 
         center = int(report[s_off])
         self._steering_center = center
-        self._steering_center_value_label.setText(str(center))
         self._update_steering_calibration_label()
 
         try:
