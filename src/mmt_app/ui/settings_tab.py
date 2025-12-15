@@ -74,14 +74,23 @@ _DEFAULT_STEERING_OFFSET: int = 0
 _DEFAULT_STEERING_CENTER: int = 128
 """Default center value for steering calibration (8-bit mid-point)."""
 
-_DEFAULT_STEERING_RANGE: int = 127
-"""Default half-range for steering calibration."""
+_DEFAULT_STEERING_RANGE: int = 900
+"""Default wheel rotation in degrees (180-1080)."""
 
 _MAX_READS_PER_TICK: int = 50
 """Maximum HID reads per tick to drain the buffer."""
 
 _UI_SAVE_DEBOUNCE_MS: int = 500
 """Debounce interval (ms) for persisting UI settings."""
+
+_DEFAULT_THROTTLE_TARGET: int = 60
+"""Default throttle target percentage."""
+
+_DEFAULT_BRAKE_TARGET: int = 40
+"""Default brake target percentage."""
+
+_DEFAULT_GRID_STEP: int = 10
+"""Default grid step percentage."""
 
 
 class SettingsTab(QWidget):
@@ -104,6 +113,7 @@ class SettingsTab(QWidget):
         parent: QWidget | None = None,
         *,
         on_status_update: Callable[[str], None] | None = None,
+        on_targets_changed: Callable[[], None] | None = None,
         on_grid_step_changed: Callable[[int], None] | None = None,
         on_update_rate_changed: Callable[[int], None] | None = None,
         on_steering_visible_changed: Callable[[bool], None] | None = None,
@@ -113,6 +123,7 @@ class SettingsTab(QWidget):
         Args:
             parent: Parent widget.
             on_status_update: Callback invoked with status messages.
+            on_targets_changed: Callback when throttle/brake targets change.
             on_grid_step_changed: Callback when grid step changes.
             on_update_rate_changed: Callback when update rate changes.
             on_steering_visible_changed: Callback when steering visibility changes.
@@ -121,6 +132,7 @@ class SettingsTab(QWidget):
 
         # Callbacks for MainWindow integration
         self._on_status_update = on_status_update or (lambda _: None)
+        self._on_targets_changed = on_targets_changed or (lambda: None)
         self._on_grid_step_changed = on_grid_step_changed or (lambda _: None)
         self._on_update_rate_changed = on_update_rate_changed or (lambda _: None)
         self._on_steering_visible_changed = on_steering_visible_changed or (lambda _: None)
@@ -203,6 +215,21 @@ class SettingsTab(QWidget):
         """Return whether steering trace should be visible."""
         return self._show_steering_checkbox.isChecked()
 
+    @property
+    def throttle_target(self) -> int:
+        """Return the configured throttle target percentage."""
+        return self._throttle_target_slider.value()
+
+    @property
+    def brake_target(self) -> int:
+        """Return the configured brake target percentage."""
+        return self._brake_target_slider.value()
+
+    @property
+    def grid_step(self) -> int:
+        """Return the configured grid step percentage."""
+        return self._grid_step_slider.value()
+
     # -------------------------------------------------------------------------
     # Initialization methods
     # -------------------------------------------------------------------------
@@ -281,6 +308,21 @@ class SettingsTab(QWidget):
 
         layout.addStretch()
 
+        # Page-level buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self.apply_device_selection)
+
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.save_current_mapping)
+
+        btn_row.addWidget(apply_btn)
+        btn_row.addWidget(save_btn)
+
+        layout.addLayout(btn_row)
+
     def _build_device_group(self) -> QGroupBox:
         """Build the device selection group box."""
         group = QGroupBox("Device Selection")
@@ -308,7 +350,7 @@ class SettingsTab(QWidget):
         self._wheel_report_len.setValue(_DEFAULT_WHEEL_REPORT_LEN)
         form.addRow("Wheel report length:", self._wheel_report_len)
 
-        # Buttons row
+        # Refresh button row
         btn_row = QWidget()
         btn_layout = QHBoxLayout(btn_row)
         btn_layout.setContentsMargins(0, 0, 0, 0)
@@ -316,15 +358,7 @@ class SettingsTab(QWidget):
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.refresh_devices)
 
-        apply_btn = QPushButton("Apply")
-        apply_btn.clicked.connect(self.apply_device_selection)
-
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self.save_current_mapping)
-
         btn_layout.addWidget(refresh_btn)
-        btn_layout.addWidget(apply_btn)
-        btn_layout.addWidget(save_btn)
         btn_layout.addStretch()
 
         form.addRow("", btn_row)
@@ -354,36 +388,51 @@ class SettingsTab(QWidget):
         self._steering_offset.setValue(_DEFAULT_STEERING_OFFSET)
         form.addRow("Steering byte offset:", self._steering_offset)
 
-        # Steering center/range display
-        self._steering_center_label = QLabel(
-            f"Center: {_DEFAULT_STEERING_CENTER} | Range: {_DEFAULT_STEERING_RANGE}"
-        )
-        form.addRow("Steering calibration:", self._steering_center_label)
-
         # Manual steering center/range spinboxes
         steering_manual_row = QWidget()
         steering_manual_layout = QHBoxLayout(steering_manual_row)
         steering_manual_layout.setContentsMargins(0, 0, 0, 0)
 
-        self._steering_center_spin = QSpinBox()
-        self._steering_center_spin.setRange(0, 255)
-        self._steering_center_spin.setValue(_DEFAULT_STEERING_CENTER)
+        self._steering_center_value_label = QLabel(f"{_DEFAULT_STEERING_CENTER}")
+        self._steering_center_value_label.setMinimumWidth(30)
 
-        self._steering_range_spin = QSpinBox()
-        self._steering_range_spin.setRange(1, 255)
-        self._steering_range_spin.setValue(_DEFAULT_STEERING_RANGE)
-
-        apply_steering_btn = QPushButton("Apply")
-        apply_steering_btn.clicked.connect(self._apply_manual_steering_range)
+        set_center_btn = QPushButton("Set Center")
+        set_center_btn.setToolTip("Hold wheel centered and click to capture center position")
+        set_center_btn.clicked.connect(self._set_steering_center_from_wheel)
 
         steering_manual_layout.addWidget(QLabel("Center:"))
-        steering_manual_layout.addWidget(self._steering_center_spin)
-        steering_manual_layout.addWidget(QLabel("Range:"))
-        steering_manual_layout.addWidget(self._steering_range_spin)
-        steering_manual_layout.addWidget(apply_steering_btn)
+        steering_manual_layout.addWidget(self._steering_center_value_label)
+        steering_manual_layout.addWidget(set_center_btn)
         steering_manual_layout.addStretch()
 
-        form.addRow("Manual steering:", steering_manual_row)
+        form.addRow("Steering center:", steering_manual_row)
+
+        # Steering range slider (degrees of wheel rotation)
+        self._steering_range_slider = QSlider(Qt.Horizontal)
+        self._steering_range_slider.setObjectName("steeringRangeSlider")
+        self._steering_range_slider.setRange(180, 1080)
+        self._steering_range_slider.setSingleStep(10)
+        self._steering_range_slider.setPageStep(90)
+        self._steering_range_slider.setTickInterval(90)
+        self._steering_range_slider.setTickPosition(QSlider.TicksBelow)
+        self._steering_range_slider.setValue(_DEFAULT_STEERING_RANGE)
+        self._steering_range_slider.valueChanged.connect(self._on_steering_range_changed)
+
+        self._steering_range_label = QLabel(f"{_DEFAULT_STEERING_RANGE}°")
+        self._steering_range_label.setObjectName("steeringRangeValue")
+        self._steering_range_label.setStyleSheet("color: #f97316;")
+        self._steering_range_label.setMinimumWidth(52)
+        self._steering_range_slider.valueChanged.connect(
+            lambda v: self._steering_range_label.setText(f"{int(v)}°")
+        )
+
+        steering_range_row = QWidget()
+        steering_range_layout = QHBoxLayout(steering_range_row)
+        steering_range_layout.setContentsMargins(0, 0, 0, 0)
+        steering_range_layout.addWidget(self._steering_range_slider, stretch=1)
+        steering_range_layout.addWidget(self._steering_range_label)
+
+        form.addRow("Wheel rotation:", steering_range_row)
 
         # Calibration buttons row
         cal_btn_row = QWidget()
@@ -424,6 +473,7 @@ class SettingsTab(QWidget):
         line_edit = QLineEdit()
         line_edit.setPlaceholderText(f"Select {label.lower()} (mp3 / ogg / wav)")
         line_edit.setReadOnly(True)
+        line_edit.setMinimumWidth(480)
         line_edit.textChanged.connect(self._schedule_save_ui_settings)
         self._sound_files[kind] = line_edit
 
@@ -444,10 +494,88 @@ class SettingsTab(QWidget):
         group = QGroupBox("Display Settings")
         form = QFormLayout(group)
 
+        # Throttle target slider
+        self._throttle_target_slider = QSlider(Qt.Horizontal)
+        self._throttle_target_slider.setObjectName("throttleTargetSlider")
+        self._throttle_target_slider.setRange(0, 100)
+        self._throttle_target_slider.setSingleStep(1)
+        self._throttle_target_slider.setPageStep(5)
+        self._throttle_target_slider.setTickInterval(10)
+        self._throttle_target_slider.setTickPosition(QSlider.TicksBelow)
+        self._throttle_target_slider.setValue(_DEFAULT_THROTTLE_TARGET)
+        self._throttle_target_slider.valueChanged.connect(self._on_targets_changed_internal)
+        self._throttle_target_slider.valueChanged.connect(self._schedule_save_ui_settings)
+
+        self._throttle_target_label = QLabel(f"{_DEFAULT_THROTTLE_TARGET}%")
+        self._throttle_target_label.setObjectName("throttleTargetValue")
+        self._throttle_target_label.setStyleSheet("color: #22c55e;")
+        self._throttle_target_label.setMinimumWidth(52)
+        self._throttle_target_slider.valueChanged.connect(
+            lambda v: self._throttle_target_label.setText(f"{int(v)}%")
+        )
+
+        throttle_row = QWidget()
+        throttle_layout = QHBoxLayout(throttle_row)
+        throttle_layout.setContentsMargins(0, 0, 0, 0)
+        throttle_layout.addWidget(self._throttle_target_slider, stretch=1)
+        throttle_layout.addWidget(self._throttle_target_label)
+
+        form.addRow("Throttle target:", throttle_row)
+
+        # Brake target slider
+        self._brake_target_slider = QSlider(Qt.Horizontal)
+        self._brake_target_slider.setObjectName("brakeTargetSlider")
+        self._brake_target_slider.setRange(0, 100)
+        self._brake_target_slider.setSingleStep(1)
+        self._brake_target_slider.setPageStep(5)
+        self._brake_target_slider.setTickInterval(10)
+        self._brake_target_slider.setTickPosition(QSlider.TicksBelow)
+        self._brake_target_slider.setValue(_DEFAULT_BRAKE_TARGET)
+        self._brake_target_slider.valueChanged.connect(self._on_targets_changed_internal)
+        self._brake_target_slider.valueChanged.connect(self._schedule_save_ui_settings)
+
+        self._brake_target_label = QLabel(f"{_DEFAULT_BRAKE_TARGET}%")
+        self._brake_target_label.setObjectName("brakeTargetValue")
+        self._brake_target_label.setStyleSheet("color: #ef4444;")
+        self._brake_target_label.setMinimumWidth(52)
+        self._brake_target_slider.valueChanged.connect(
+            lambda v: self._brake_target_label.setText(f"{int(v)}%")
+        )
+
+        brake_row = QWidget()
+        brake_layout = QHBoxLayout(brake_row)
+        brake_layout.setContentsMargins(0, 0, 0, 0)
+        brake_layout.addWidget(self._brake_target_slider, stretch=1)
+        brake_layout.addWidget(self._brake_target_label)
+
+        form.addRow("Brake target:", brake_row)
+
+        # Grid step slider (10-50%)
+        self._grid_step_slider = QSlider(Qt.Horizontal)
+        self._grid_step_slider.setRange(10, 50)
+        self._grid_step_slider.setSingleStep(10)
+        self._grid_step_slider.setPageStep(10)
+        self._grid_step_slider.setTickInterval(10)
+        self._grid_step_slider.setTickPosition(QSlider.TicksBelow)
+        self._grid_step_slider.setValue(_DEFAULT_GRID_STEP)
+        self._grid_step_slider.valueChanged.connect(self._on_grid_step_slider_changed)
+        self._grid_step_slider.valueChanged.connect(self._schedule_save_ui_settings)
+
+        self._grid_step_label = QLabel(f"{_DEFAULT_GRID_STEP}%")
+        self._grid_step_label.setMinimumWidth(52)
+
+        grid_row = QWidget()
+        grid_layout = QHBoxLayout(grid_row)
+        grid_layout.setContentsMargins(0, 0, 0, 0)
+        grid_layout.addWidget(self._grid_step_slider, stretch=1)
+        grid_layout.addWidget(self._grid_step_label)
+
+        form.addRow("Grid division:", grid_row)
+
         # Update rate slider
         self._update_rate_slider = QSlider(Qt.Horizontal)
-        self._update_rate_slider.setRange(5, 120)
-        self._update_rate_slider.setSingleStep(5)
+        self._update_rate_slider.setRange(30, 120)
+        self._update_rate_slider.setSingleStep(10)
         self._update_rate_slider.setPageStep(10)
         self._update_rate_slider.setTickInterval(10)
         self._update_rate_slider.setTickPosition(QSlider.TicksBelow)
@@ -456,6 +584,7 @@ class SettingsTab(QWidget):
         self._update_rate_slider.valueChanged.connect(self._schedule_save_ui_settings)
 
         self._update_rate_label = QLabel("60 Hz")
+        self._update_rate_label.setMinimumWidth(52)
 
         rate_row = QWidget()
         rate_layout = QHBoxLayout(rate_row)
@@ -591,9 +720,11 @@ class SettingsTab(QWidget):
             self._wheel_report_len.setValue(wheel_cfg.report_len)
             self._steering_offset.setValue(wheel_cfg.steering_offset)
             self._steering_center = wheel_cfg.steering_center
-            self._steering_range = wheel_cfg.steering_range
-            self._steering_center_spin.setValue(wheel_cfg.steering_center)
-            self._steering_range_spin.setValue(wheel_cfg.steering_range)
+            self._steering_center_value_label.setText(str(wheel_cfg.steering_center))
+            # Clamp steering range to slider bounds (180-1080 degrees)
+            clamped_range = max(180, min(1080, wheel_cfg.steering_range))
+            self._steering_range = clamped_range
+            self._steering_range_slider.setValue(clamped_range)
             self._select_device_by_vid_pid(
                 self._wheel_device_combo, wheel_cfg.vendor_id, wheel_cfg.product_id
             )
@@ -957,52 +1088,66 @@ class SettingsTab(QWidget):
             sum(self._steering_center_samples)
             / max(1, len(self._steering_center_samples))
         )
-        left_min = (
-            min(self._steering_left_samples) if self._steering_left_samples else center
-        )
-        right_max = (
-            max(self._steering_right_samples) if self._steering_right_samples else center
-        )
-        span = max(center - left_min, right_max - center, 1)
 
         self._steering_center = center
-        self._steering_range = span
-        self._steering_center_spin.setValue(center)
-        self._steering_range_spin.setValue(span)
+        self._steering_center_value_label.setText(str(center))
         self._update_steering_calibration_label()
 
         try:
             self.save_current_mapping()
             self._set_status(
-                f"Steering calibrated: center={center}, range={span}. Saved to config.ini."
+                f"Steering calibrated: center={center}. Saved to config.ini."
             )
         except Exception:
             self._set_status(
-                f"Steering calibrated: center={center}, range={span}. Click Save to persist."
+                f"Steering calibrated: center={center}. Click Save to persist."
             )
 
     def _update_steering_calibration_label(self) -> None:
         """Refresh the steering center/range label in settings."""
         if hasattr(self, "_steering_center_label"):
             self._steering_center_label.setText(
-                f"Center: {int(self._steering_center)} | Range: {int(self._steering_range)}"
+                f"Center: {int(self._steering_center)} | Rotation: {int(self._steering_range)}°"
             )
 
-    def _apply_manual_steering_range(self) -> None:
-        """Allow users to manually set steering center/range from spinboxes."""
-        self._steering_center = int(self._steering_center_spin.value())
-        self._steering_range = max(1, int(self._steering_range_spin.value()))
+    def _set_steering_center_from_wheel(self) -> None:
+        """Read current steering position from wheel and set as center."""
+        if not self._wheel_session.is_open:
+            self._set_status("Wheel not connected. Apply device selection first.")
+            return
+
+        report = self._wheel_session.read_latest_report(
+            report_len=self._wheel_report_len.value(),
+            max_reads=_MAX_READS_PER_TICK,
+        )
+        if not report:
+            self._set_status("Could not read from wheel. Try again.")
+            return
+
+        s_off = self._steering_offset.value()
+        if s_off >= len(report):
+            self._set_status("Steering offset out of range.")
+            return
+
+        center = int(report[s_off])
+        self._steering_center = center
+        self._steering_center_value_label.setText(str(center))
         self._update_steering_calibration_label()
 
         try:
             self.save_current_mapping()
-            self._set_status(
-                f"Steering center/range updated (center={self._steering_center}, range={self._steering_range}). Saved."
-            )
+            self._set_status(f"Steering center set to {center}. Saved.")
         except Exception:
-            self._set_status(
-                f"Steering center/range updated (center={self._steering_center}, range={self._steering_range}). Click Save to persist."
-            )
+            self._set_status(f"Steering center set to {center}. Click Save to persist.")
+
+    def _on_steering_range_changed(self, value: int) -> None:
+        """Handle steering range slider changes (wheel rotation degrees)."""
+        self._steering_range = value
+        self._update_steering_calibration_label()
+        try:
+            self.save_current_mapping()
+        except Exception:
+            pass  # Will be saved on next manual save
 
     # -------------------------------------------------------------------------
     # Sound management
@@ -1083,7 +1228,12 @@ class SettingsTab(QWidget):
 
     def _on_update_rate_slider_changed(self, hz: int) -> None:
         """Handle update rate slider changes."""
-        hz = clamp_int(hz, 5, 120)
+        # Snap to 10 Hz increments
+        hz = max(30, min(120, (hz // 10) * 10))
+        if hz != self._update_rate_slider.value():
+            self._update_rate_slider.blockSignals(True)
+            self._update_rate_slider.setValue(hz)
+            self._update_rate_slider.blockSignals(False)
         self._update_rate_label.setText(f"{hz} Hz")
         self._on_update_rate_changed(hz)
 
@@ -1092,9 +1242,24 @@ class SettingsTab(QWidget):
         visible = state == Qt.Checked.value
         self._on_steering_visible_changed(visible)
 
+    def _on_targets_changed_internal(self) -> None:
+        """Handle throttle/brake target slider changes."""
+        self._on_targets_changed()
+
+    def _on_grid_step_slider_changed(self, value: int) -> None:
+        """Handle grid step slider changes."""
+        # Snap to 10% increments
+        step = max(10, min(50, (value // 10) * 10))
+        if step != value:
+            self._grid_step_slider.blockSignals(True)
+            self._grid_step_slider.setValue(step)
+            self._grid_step_slider.blockSignals(False)
+        self._grid_step_label.setText(f"{step}%")
+        self._on_grid_step_changed(step)
+
     def set_update_rate(self, hz: int, *, update_slider: bool = False) -> None:
         """Set the update rate and optionally sync the slider."""
-        hz = clamp_int(hz, 5, 120)
+        hz = clamp_int(hz, 30, 120)
         if update_slider:
             self._update_rate_slider.blockSignals(True)
             self._update_rate_slider.setValue(hz)
@@ -1108,6 +1273,30 @@ class SettingsTab(QWidget):
             self._show_steering_checkbox.setChecked(visible)
             self._show_steering_checkbox.blockSignals(False)
 
+    def set_throttle_target(self, value: int) -> None:
+        """Set the throttle target percentage."""
+        value = clamp_int(value, 0, 100)
+        self._throttle_target_slider.blockSignals(True)
+        self._throttle_target_slider.setValue(value)
+        self._throttle_target_slider.blockSignals(False)
+        self._throttle_target_label.setText(f"{value}%")
+
+    def set_brake_target(self, value: int) -> None:
+        """Set the brake target percentage."""
+        value = clamp_int(value, 0, 100)
+        self._brake_target_slider.blockSignals(True)
+        self._brake_target_slider.setValue(value)
+        self._brake_target_slider.blockSignals(False)
+        self._brake_target_label.setText(f"{value}%")
+
+    def set_grid_step(self, step_percent: int) -> None:
+        """Set the grid step percentage."""
+        step = max(10, min(50, (step_percent // 10) * 10))
+        self._grid_step_slider.blockSignals(True)
+        self._grid_step_slider.setValue(step)
+        self._grid_step_slider.blockSignals(False)
+        self._grid_step_label.setText(f"{step}%")
+
     # -------------------------------------------------------------------------
     # UI settings persistence
     # -------------------------------------------------------------------------
@@ -1117,11 +1306,11 @@ class SettingsTab(QWidget):
         self._ui_save_timer.start(_UI_SAVE_DEBOUNCE_MS)
 
     def _save_ui_settings(self) -> None:
-        """Persist UI-related settings (sounds, update rate, steering visibility)."""
+        """Persist UI-related settings (targets, grid, sounds, update rate, steering visibility)."""
         cfg = UiConfig(
-            throttle_target=0,  # Managed by telemetry tab
-            brake_target=0,  # Managed by telemetry tab
-            grid_step_percent=0,  # Managed by telemetry tab
+            throttle_target=self._throttle_target_slider.value(),
+            brake_target=self._brake_target_slider.value(),
+            grid_step_percent=self._grid_step_slider.value(),
             update_hz=self._update_rate_slider.value(),
             show_steering=self._show_steering_checkbox.isChecked(),
             throttle_sound_enabled=self.sound_enabled("throttle"),

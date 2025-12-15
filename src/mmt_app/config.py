@@ -143,7 +143,7 @@ def load_wheel_config() -> Optional[WheelConfig]:
             report_len=int(data["report_len"]),
             steering_offset=int(data["steering_offset"]),
             steering_center=int(data["steering_center"] or 128),
-            steering_range=int(data["steering_range"] or 127),
+            steering_range=int(data["steering_range"] or 900),
         )
     except Exception:
         return None

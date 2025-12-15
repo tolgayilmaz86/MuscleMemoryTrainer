@@ -28,7 +28,6 @@ from .utils import (
     clamp,
     clamp_int,
     scale_axis,
-    snap_to_step,
 )
 
 
@@ -39,9 +38,6 @@ _STEERING_DEADBAND_DEGREES = 1.5
 # UI defaults
 _DEFAULT_UPDATE_RATE_HZ = 20
 _DEFAULT_MAX_CHART_POINTS = 200
-_DEFAULT_THROTTLE_TARGET = 60
-_DEFAULT_BRAKE_TARGET = 40
-_DEFAULT_GRID_STEP = 10
 _UI_SAVE_DEBOUNCE_MS = 250
 _MAX_READS_PER_TICK = 50
 
@@ -106,20 +102,19 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         """Build the main UI with tabs."""
-        # Create telemetry tab with callbacks
-        self._telemetry_tab = TelemetryTab(
-            on_targets_changed=self._schedule_save_ui_settings,
-        )
-        self._telemetry_tab.connect_start_stop(self._on_telemetry_start_stop)
-        self._telemetry_tab.connect_reset(self._on_telemetry_reset)
-        
-        # Create settings tab with callbacks
+        # Create settings tab first (has targets and grid controls)
         self._settings_tab = SettingsTab(
             on_status_update=self._on_settings_status_update,
+            on_targets_changed=self._on_settings_targets_changed,
             on_grid_step_changed=self._on_settings_grid_step_changed,
             on_update_rate_changed=self._on_settings_update_rate_changed,
             on_steering_visible_changed=self._on_settings_steering_visible_changed,
         )
+
+        # Create telemetry tab
+        self._telemetry_tab = TelemetryTab()
+        self._telemetry_tab.connect_start_stop(self._on_telemetry_start_stop)
+        self._telemetry_tab.connect_reset(self._on_telemetry_reset)
         
         self._active_brake_tab = ActiveBrakeTab(read_brake_percent=self._read_brake_for_active_tab)
 
@@ -164,6 +159,12 @@ class MainWindow(QMainWindow):
     def _on_settings_status_update(self, message: str) -> None:
         """Handle status updates from SettingsTab."""
         self._status_bar.showMessage(message, 5000)
+
+    def _on_settings_targets_changed(self) -> None:
+        """Handle throttle/brake target changes from SettingsTab."""
+        if hasattr(self, "_telemetry_tab"):
+            self._telemetry_tab.set_throttle_target(self._settings_tab.throttle_target)
+            self._telemetry_tab.set_brake_target(self._settings_tab.brake_target)
 
     def _on_settings_grid_step_changed(self, step: int) -> None:
         """Handle grid step changes from SettingsTab."""
@@ -229,17 +230,17 @@ class MainWindow(QMainWindow):
             self._telemetry_tab.set_steering_visible(self._show_steering)
 
     def _set_grid_step(self, step_percent: int) -> None:
-        """Set the telemetry grid step, snapping to 5% increments."""
-        step_percent = snap_to_step(clamp_int(step_percent, 5, 50), 5)
+        """Set the telemetry grid step, snapping to 10% increments."""
+        step_percent = max(10, min(50, (step_percent // 10) * 10))
         if hasattr(self, "_telemetry_tab"):
             self._telemetry_tab.set_grid_step(step_percent)
 
     def _save_ui_settings(self) -> None:
         """Persist UI-related settings (targets, grid, update rate, window size)."""
         cfg = UiConfig(
-            throttle_target=self._telemetry_tab.throttle_target,
-            brake_target=self._telemetry_tab.brake_target,
-            grid_step_percent=self._telemetry_tab.grid_step,
+            throttle_target=self._settings_tab.throttle_target,
+            brake_target=self._settings_tab.brake_target,
+            grid_step_percent=self._settings_tab.grid_step,
             update_hz=self._update_rate,
             show_steering=self._show_steering,
             throttle_sound_enabled=self._settings_tab.sound_enabled("throttle"),
@@ -256,9 +257,14 @@ class MainWindow(QMainWindow):
         try:
             ui_cfg = load_ui_config()
             if ui_cfg:
+                # Set targets in settings tab (which propagates to telemetry tab)
+                self._settings_tab.set_throttle_target(ui_cfg.throttle_target)
+                self._settings_tab.set_brake_target(ui_cfg.brake_target)
+                self._settings_tab.set_grid_step(ui_cfg.grid_step_percent)
+                # Also set directly on telemetry tab
                 self._telemetry_tab.set_throttle_target(ui_cfg.throttle_target)
                 self._telemetry_tab.set_brake_target(ui_cfg.brake_target)
-                self._set_grid_step(ui_cfg.grid_step_percent)
+                self._telemetry_tab.set_grid_step(ui_cfg.grid_step_percent)
                 self._set_update_rate(ui_cfg.update_hz)
                 self._set_show_steering(ui_cfg.show_steering)
                 self._settings_tab.apply_sound_settings(
@@ -291,8 +297,8 @@ class MainWindow(QMainWindow):
 
     def _maybe_play_target_sound(self, sample: TelemetrySample) -> None:
         """Play sounds when throttle/brake cross their targets."""
-        throttle_target = float(self._telemetry_tab.throttle_target)
-        brake_target = float(self._telemetry_tab.brake_target)
+        throttle_target = float(self._settings_tab.throttle_target)
+        brake_target = float(self._settings_tab.brake_target)
         self._update_target_flag(sample.throttle, throttle_target, "_throttle_target_hit", "throttle")
         self._update_target_flag(sample.brake, brake_target, "_brake_target_hit", "brake")
 

@@ -82,7 +82,8 @@ QLabel#brakeBarLabel {
 }
 
 QSlider#throttleTargetSlider::groove:horizontal,
-QSlider#brakeTargetSlider::groove:horizontal {
+QSlider#brakeTargetSlider::groove:horizontal,
+QSlider#steeringRangeSlider::groove:horizontal {
     background: #1f2937;
     height: 8px;
     border-radius: 4px;
@@ -98,8 +99,14 @@ QSlider#brakeTargetSlider::sub-page:horizontal {
     border-radius: 4px;
 }
 
+QSlider#steeringRangeSlider::sub-page:horizontal {
+    background: #f97316;
+    border-radius: 4px;
+}
+
 QSlider#throttleTargetSlider::add-page:horizontal,
-QSlider#brakeTargetSlider::add-page:horizontal {
+QSlider#brakeTargetSlider::add-page:horizontal,
+QSlider#steeringRangeSlider::add-page:horizontal {
     background: #111827;
     border-radius: 4px;
 }
@@ -120,8 +127,17 @@ QSlider#brakeTargetSlider::handle:horizontal {
     border-radius: 8px;
 }
 
+QSlider#steeringRangeSlider::handle:horizontal {
+    background: #e2e8f0;
+    border: 2px solid #f97316;
+    width: 16px;
+    margin: -6px 0;
+    border-radius: 8px;
+}
+
 QLabel#throttleTargetValue,
-QLabel#brakeTargetValue {
+QLabel#brakeTargetValue,
+QLabel#steeringRangeValue {
     font-weight: 700;
 }
 
