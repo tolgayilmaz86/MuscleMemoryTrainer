@@ -73,6 +73,14 @@ class ActiveBrakeConfig:
     speed: int  # Speed/update rate in Hz (30-120)
 
 
+@dataclass(frozen=True)
+class ThresholdTrainingConfig:
+    """Persistence for Threshold Training mode."""
+
+    step: int  # Step increment for target values (5, 10, 15, 20, 25)
+    speed: int  # Speed/update rate in Hz (30-120)
+
+
 # -------------------------------------------------------------------------
 # Default values for all settings
 # -------------------------------------------------------------------------
@@ -100,6 +108,10 @@ DEFAULT_WINDOW_HEIGHT: int = 600
 
 # Active Brake defaults
 DEFAULT_ACTIVE_BRAKE_SPEED: int = 60  # Update rate in Hz (30-120)
+
+# Threshold Training defaults
+DEFAULT_THRESHOLD_STEP: int = 10  # Step increment (5, 10, 15, 20, 25)
+DEFAULT_THRESHOLD_SPEED: int = 60  # Update rate in Hz (30-120)
 
 
 def config_path() -> Path:
@@ -164,6 +176,12 @@ def ensure_config_exists() -> None:
     # Active Brake section
     parser["active_brake"] = {
         "speed": str(DEFAULT_ACTIVE_BRAKE_SPEED),
+    }
+
+    # Threshold Training section
+    parser["threshold_training"] = {
+        "step": str(DEFAULT_THRESHOLD_STEP),
+        "speed": str(DEFAULT_THRESHOLD_SPEED),
     }
 
     with path.open("w", encoding="utf-8") as f:
@@ -396,6 +414,37 @@ def save_active_brake_config(cfg: ActiveBrakeConfig) -> None:
     parser = configparser.ConfigParser()
     parser.read(config_path(), encoding="utf-8")
     parser["active_brake"] = {"speed": str(int(cfg.speed))}
+    path = config_path()
+    with path.open("w", encoding="utf-8") as f:
+        parser.write(f)
+
+
+def load_threshold_training_config() -> ThresholdTrainingConfig:
+    """Load threshold training configuration from config file."""
+    path = config_path()
+    parser = configparser.ConfigParser()
+    parser.read(path, encoding="utf-8")
+    section = parser["threshold_training"] if "threshold_training" in parser else {}
+    try:
+        step = int(section.get("step", str(DEFAULT_THRESHOLD_STEP)))
+        speed = int(section.get("speed", str(DEFAULT_THRESHOLD_SPEED)))
+    except Exception:
+        step = DEFAULT_THRESHOLD_STEP
+        speed = DEFAULT_THRESHOLD_SPEED
+    # Clamp values to valid ranges
+    step = max(5, min(25, step))
+    speed = max(30, min(120, speed))
+    return ThresholdTrainingConfig(step=step, speed=speed)
+
+
+def save_threshold_training_config(cfg: ThresholdTrainingConfig) -> None:
+    """Save threshold training configuration to config file."""
+    parser = configparser.ConfigParser()
+    parser.read(config_path(), encoding="utf-8")
+    parser["threshold_training"] = {
+        "step": str(int(cfg.step)),
+        "speed": str(int(cfg.speed)),
+    }
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
         parser.write(f)

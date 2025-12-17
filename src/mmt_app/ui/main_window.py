@@ -23,6 +23,7 @@ from .about_tab import AboutTab
 from .active_brake_tab import ActiveBrakeTab
 from .settings_tab import SettingsTab
 from .telemetry_tab import TelemetryTab
+from .threshold_training_tab import ThresholdTrainingTab
 from .trail_brake_tab import TrailBrakeTab
 from .utils import (
     clamp,
@@ -121,6 +122,9 @@ class MainWindow(QMainWindow):
         
         self._active_brake_tab = ActiveBrakeTab(read_brake_percent=self._read_brake_for_active_tab)
         self._trail_brake_tab = TrailBrakeTab(read_brake_percent=self._read_brake_for_static_tab)
+        self._threshold_training_tab = ThresholdTrainingTab(
+            read_brake_percent=self._read_brake_for_active_tab
+        )
 
         self._about_tab = AboutTab(app_name=self._app_name, version=self._version)
 
@@ -128,6 +132,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._telemetry_tab, "Telemetry")
         tabs.addTab(self._trail_brake_tab, "Trail Brake")
         tabs.addTab(self._active_brake_tab, "Active Brake")
+        tabs.addTab(self._threshold_training_tab, "Threshold Training")
         tabs.addTab(self._settings_tab, "Settings")
         tabs.addTab(self._about_tab, "About")
         self.setCentralWidget(tabs)
@@ -246,6 +251,8 @@ class MainWindow(QMainWindow):
             self._trail_brake_tab.set_watermark_visible(self._show_watermark)
         if hasattr(self, "_active_brake_tab"):
             self._active_brake_tab.set_watermark_visible(self._show_watermark)
+        if hasattr(self, "_threshold_training_tab"):
+            self._threshold_training_tab.set_watermark_visible(self._show_watermark)
 
     def _set_grid_step(self, step_percent: int) -> None:
         """Set the telemetry grid step, snapping to 10% increments."""
