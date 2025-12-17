@@ -48,10 +48,12 @@ from .utils import AXIS_MAX, AXIS_MIN, clamp
 
 _MIN_STEP = 5
 _MAX_STEP = 25
-_MIN_SPEED_HZ = 30
-_MAX_SPEED_HZ = 120
-_TIMER_INTERVAL_MS = 40
-_DEFAULT_SCROLL_SPEED = 1.5
+_MIN_SPEED = 1
+_MAX_SPEED = 10
+_DEFAULT_SPEED = 5
+_FRAME_RATE_HZ = 60  # Fixed 60 FPS for smooth animation
+_TIMER_INTERVAL_MS = 16  # ~60 FPS (1000 / 60)
+_BASE_SCROLL_SPEED = 0.3  # Base scroll speed per frame
 _AXIS_X_MAX = 100.0
 _TARGET_LIFETIME_X = 100.0  # X distance a target travels before removal
 _INDICATOR_SIZE = 12.0  # Size of the brake position indicator
@@ -166,18 +168,30 @@ class LabeledTargetChartView(QChartView):
         """
         super().__init__(chart)
         self._targets_series = targets_series
+
+        # Pre-create and cache fonts and metrics for performance
         self._label_font = QFont()
         self._label_font.setBold(True)
         self._label_font.setPixelSize(12)
         self._label_color = QColor("#ffffff")
-        self.setRenderHint(QPainter.Antialiasing)
+        self._label_metrics = QFontMetrics(self._label_font)
 
-        # Watermark support
+        # Watermark support with cached resources
         self._watermark_text = ""
         self._watermark_visible = True
         self._watermark_font = QFont()
         self._watermark_font.setBold(True)
         self._watermark_color = QColor(148, 163, 184, 100)
+        self._cached_watermark_font: QFont | None = None
+        self._cached_watermark_metrics: QFontMetrics | None = None
+        self._last_plot_height = 0
+
+        # Use OpenGL for hardware-accelerated rendering
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setViewportUpdateMode(QChartView.MinimalViewportUpdate)
+
+        # Disable chart animations for smoother real-time updates
+        chart.setAnimationOptions(QChart.NoAnimation)
 
     def set_watermark_text(self, text: str) -> None:
         """Set the watermark text to display."""
@@ -186,8 +200,10 @@ class LabeledTargetChartView(QChartView):
 
     def set_watermark_visible(self, visible: bool) -> None:
         """Set whether the watermark is visible."""
-        self._watermark_visible = bool(visible)
-        self.viewport().update()
+        visible = bool(visible)
+        if visible != self._watermark_visible:
+            self._watermark_visible = visible
+            self.viewport().update()
 
     def paintEvent(self, event) -> None:
         """Paint the chart, watermark, and target labels."""
@@ -208,28 +224,34 @@ class LabeledTargetChartView(QChartView):
         if plot_area.isEmpty():
             return
 
-        painter = QPainter(self.viewport())
+        # Cache font at current size to avoid recreation every frame
+        plot_height = int(plot_area.height())
+        if plot_height != self._last_plot_height or self._cached_watermark_font is None:
+            self._last_plot_height = plot_height
+            font_size = int(plot_height * 0.6)
+            self._cached_watermark_font = QFont(self._watermark_font)
+            self._cached_watermark_font.setPixelSize(max(24, font_size))
+            self._cached_watermark_metrics = QFontMetrics(self._cached_watermark_font)
 
-        # Calculate font size based on plot area
-        font = QFont(self._watermark_font)
-        font_size = int(plot_area.height() * 0.6)
-        font.setPixelSize(max(24, font_size))
-        painter.setFont(font)
+        painter = QPainter(self.viewport())
+        painter.setFont(self._cached_watermark_font)
         painter.setPen(self._watermark_color)
 
         # Draw centered in plot area, slightly above center
-        metrics = QFontMetrics(font)
-        text_width = metrics.horizontalAdvance(self._watermark_text)
-        text_height = metrics.height()
+        text_width = self._cached_watermark_metrics.horizontalAdvance(self._watermark_text)
+        text_height = self._cached_watermark_metrics.height()
 
         x = int(plot_area.center().x() - text_width / 2)
-        y = int(plot_area.center().y() + text_height / 4 - plot_area.height() * 0.05)
+        y = int(plot_area.center().y() + text_height / 4 - plot_height * 0.05)
 
         painter.drawText(x, y, self._watermark_text)
         painter.end()
 
     def _draw_target_labels(self) -> None:
         """Draw value labels centered on each target marker."""
+        if self._targets_series.count() == 0:
+            return
+
         chart = self.chart()
         if chart is None:
             return
@@ -242,7 +264,9 @@ class LabeledTargetChartView(QChartView):
         painter.setFont(self._label_font)
         painter.setPen(self._label_color)
 
-        metrics = QFontMetrics(self._label_font)
+        # Use cached metrics
+        metrics = self._label_metrics
+        text_height_offset = metrics.height() // 4
 
         for i in range(self._targets_series.count()):
             point = self._targets_series.at(i)
@@ -254,11 +278,10 @@ class LabeledTargetChartView(QChartView):
 
             # Calculate text dimensions for centering
             text_width = metrics.horizontalAdvance(label)
-            text_height = metrics.height()
 
             # Draw text centered on the marker
             x = int(pixel_pos.x() - text_width / 2)
-            y = int(pixel_pos.y() + text_height / 4)  # Slight adjustment for visual centering
+            y = int(pixel_pos.y() + text_height_offset)
 
             painter.drawText(x, y, label)
 
@@ -311,6 +334,8 @@ class ThresholdChartBuilder:
         series_brake_line.setPen(pen)
 
         chart = QChart()
+        # Performance: Disable all animations for real-time updates
+        chart.setAnimationOptions(QChart.NoAnimation)
         chart.addSeries(series_brake_line)
         chart.addSeries(series_targets)
         chart.addSeries(series_indicator)
@@ -371,8 +396,7 @@ class ThresholdTrainingTab(QWidget):
         """
         super().__init__()
         self._read_brake_percent = read_brake_percent
-        self._scroll_speed = _DEFAULT_SCROLL_SPEED
-        self._spawn_interval = 40  # Spawn a new target every N ticks
+        self._speed = _DEFAULT_SPEED
         self._watermark_visible = True
 
         self._init_components()
@@ -414,12 +438,12 @@ class ThresholdTrainingTab(QWidget):
         self._step_label = QLabel()
         self._step_label.setMinimumWidth(52)
 
-        # Speed slider (30-120 Hz)
+        # Speed slider (1-10)
         self._speed_slider = QSlider(Qt.Horizontal)
-        self._speed_slider.setRange(_MIN_SPEED_HZ, _MAX_SPEED_HZ)
-        self._speed_slider.setSingleStep(10)
-        self._speed_slider.setPageStep(10)
-        self._speed_slider.setTickInterval(10)
+        self._speed_slider.setRange(_MIN_SPEED, _MAX_SPEED)
+        self._speed_slider.setSingleStep(1)
+        self._speed_slider.setPageStep(1)
+        self._speed_slider.setTickInterval(1)
         self._speed_slider.setTickPosition(QSlider.TicksBelow)
         self._speed_slider.valueChanged.connect(self._on_speed_changed)
 
@@ -522,11 +546,9 @@ class ThresholdTrainingTab(QWidget):
         self._watermark_visible = visible
         self._chart_view.set_watermark_visible(visible)
 
-    def set_update_rate(self, hz: int) -> None:
-        """Adjust timer interval for update rate."""
-        hz = max(_MIN_SPEED_HZ, min(_MAX_SPEED_HZ, int(hz)))
-        interval_ms = max(1, int(1000 / hz))
-        self._timer.setInterval(interval_ms)
+    def set_speed(self, speed: int) -> None:
+        """Adjust scroll speed."""
+        self._speed = max(_MIN_SPEED, min(_MAX_SPEED, int(speed)))
 
     # -------------------------------------------------------------------------
     # Private Methods - State Management
@@ -555,12 +577,16 @@ class ThresholdTrainingTab(QWidget):
             float(self._read_brake_percent()), float(AXIS_MIN), float(AXIS_MAX)
         )
 
-        # Move existing targets
-        self._move_targets()
+        # Calculate scroll speed based on speed setting
+        scroll_speed = _BASE_SCROLL_SPEED * self._speed
 
-        # Spawn new targets periodically
+        # Move existing targets
+        self._move_targets(scroll_speed)
+
+        # Spawn new targets periodically (faster speed = shorter spawn interval)
+        spawn_interval = max(30, 120 - (self._speed * 10))
         self._state.spawn_counter += 1
-        if self._state.spawn_counter >= self._spawn_interval:
+        if self._state.spawn_counter >= spawn_interval:
             self._spawn_target()
             self._state.spawn_counter = 0
 
@@ -568,10 +594,10 @@ class ThresholdTrainingTab(QWidget):
         self._update_display()
         self._set_watermark_percent(self._state.current_brake)
 
-    def _move_targets(self) -> None:
+    def _move_targets(self, scroll_speed: float) -> None:
         """Move all targets leftward and remove expired ones."""
         for target in self._state.targets:
-            target.move_left(self._scroll_speed)
+            target.move_left(scroll_speed)
 
         # Remove targets that have gone off screen
         self._state.targets = [t for t in self._state.targets if not t.is_expired()]
@@ -631,20 +657,20 @@ class ThresholdTrainingTab(QWidget):
         self._update_y_axis_ticks(step)
         self._save_config()
 
-    def _on_speed_changed(self, hz: int) -> None:
+    def _on_speed_changed(self, speed: int) -> None:
         """Handle speed slider changes."""
-        hz = max(_MIN_SPEED_HZ, min(_MAX_SPEED_HZ, int(hz)))
-        self._update_speed_label(hz)
-        self.set_update_rate(hz)
+        speed = max(_MIN_SPEED, min(_MAX_SPEED, int(speed)))
+        self._update_speed_label(speed)
+        self.set_speed(speed)
         self._save_config()
 
     def _update_step_label(self, step: int) -> None:
         """Update the step label text."""
         self._step_label.setText(f"{step}%")
 
-    def _update_speed_label(self, hz: int) -> None:
+    def _update_speed_label(self, speed: int) -> None:
         """Update the speed label text."""
-        self._speed_label.setText(f"{hz} Hz")
+        self._speed_label.setText(f"{speed}")
 
     def _update_y_axis_ticks(self, step: int) -> None:
         """Update Y axis tick marks to match the step value."""

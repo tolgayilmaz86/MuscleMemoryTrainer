@@ -111,7 +111,7 @@ DEFAULT_ACTIVE_BRAKE_SPEED: int = 60  # Update rate in Hz (30-120)
 
 # Threshold Training defaults
 DEFAULT_THRESHOLD_STEP: int = 10  # Step increment (5, 10, 15, 20, 25)
-DEFAULT_THRESHOLD_SPEED: int = 60  # Update rate in Hz (30-120)
+DEFAULT_THRESHOLD_SPEED: int = 5  # Speed (1-10)
 
 
 def config_path() -> Path:
