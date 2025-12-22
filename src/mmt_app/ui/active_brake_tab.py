@@ -404,6 +404,14 @@ class ActiveBrakeTab(QWidget):
         self._watermark_visible = visible
         self._chart_view.set_watermark_visible(visible)
 
+    def set_grid_step(self, step_percent: int) -> None:
+        """Set the grid step from global settings.
+
+        Args:
+            step_percent: Grid step percentage (10, 20, 30, 40, 50).
+        """
+        self._apply_grid_step(step_percent)
+
     def set_update_rate(self, hz: int) -> None:
         """Adjust timer interval for how often the active brake chart ticks."""
         hz = max(_MIN_SPEED_HZ, min(_MAX_SPEED_HZ, int(hz)))

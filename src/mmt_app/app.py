@@ -8,7 +8,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 APP_NAME = "Muscle Memory Trainer"
-APP_VERSION = "0.1.0"
+APP_VERSION = "1.2.0"
 
 
 def resource_path(*parts: str) -> Path:

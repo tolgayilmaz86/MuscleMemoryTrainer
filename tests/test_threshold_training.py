@@ -147,7 +147,7 @@ class TestThresholdTrainingConfig:
     def test_default_values(self) -> None:
         """Test default constant values."""
         assert DEFAULT_THRESHOLD_STEP == 10
-        assert DEFAULT_THRESHOLD_SPEED == 60
+        assert DEFAULT_THRESHOLD_SPEED == 5
 
     def test_save_and_load_roundtrip(self, tmp_path, monkeypatch) -> None:
         """Test that config can be saved and loaded."""
@@ -159,7 +159,7 @@ class TestThresholdTrainingConfig:
         )
 
         # Save config
-        original_config = ThresholdTrainingConfig(step=20, speed=80)
+        original_config = ThresholdTrainingConfig(step=5, speed=2)
         save_threshold_training_config(original_config)
 
         # Load config
@@ -196,4 +196,4 @@ class TestThresholdTrainingConfig:
         loaded_config = load_threshold_training_config()
 
         assert loaded_config.step == 5  # Clamped to min
-        assert loaded_config.speed == 120  # Clamped to max
+        assert loaded_config.speed == 10  # Clamped to max

@@ -19,10 +19,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QPushButton,
     QSlider,
     QSpinBox,
@@ -847,16 +849,34 @@ class SettingsTab(QWidget):
         self._baseline_samples = []
         self._active_samples = []
 
-        self._set_status(f"Calibrating {axis}: keep input RELEASED for 2 seconds...")
+        # Update both status and wizard dialog if open
+        baseline_msg = f"Keep {axis.upper()} released..."
+        self._set_status(f"Phase 1/2: {baseline_msg}")
+        if self._setup_wizard_label:
+            self._setup_wizard_label.setText(
+                f"📊 Phase 1 of 2: Baseline capture\n\n"
+                f"Keep {axis.upper()} RELEASED.\n"
+                f"Recording resting position..."
+            )
+        
         self._calibration_timer.start()
         QTimer.singleShot(CALIBRATION_DURATION_MS, self._switch_to_active_capture)
 
     def _switch_to_active_capture(self) -> None:
         """Transition from baseline capture to active capture."""
         self._calibration_phase = "active"
-        self._set_status(
-            f"Now PRESS/MOVE the {self._calibration_axis} for 2 seconds..."
-        )
+        axis = self._calibration_axis
+        
+        # Update both status and wizard dialog if open
+        active_msg = f"Press/move {axis.upper()} now!"
+        self._set_status(f"Phase 2/2: {active_msg}")
+        if self._setup_wizard_label:
+            self._setup_wizard_label.setText(
+                f"📊 Phase 2 of 2: Active capture\n\n"
+                f"Press and release {axis.upper()} repeatedly.\n"
+                f"Move it through its full range..."
+            )
+        
         QTimer.singleShot(CALIBRATION_DURATION_MS, self._finish_calibration)
 
     def _finish_calibration(self) -> None:
@@ -923,8 +943,46 @@ class SettingsTab(QWidget):
         # Append to correct sample list based on current phase
         if self._calibration_phase == "active":
             self._active_samples.append(report)
+            sample_count = len(self._active_samples)
         else:
             self._baseline_samples.append(report)
+            sample_count = len(self._baseline_samples)
+
+        # Update wizard visualization if dialog is open
+        if self._setup_wizard_dialog and self._setup_wizard_dialog.isVisible():
+            # Find the byte with highest current value for display
+            if len(report) > 0:
+                max_val = max(report)
+                self._setup_wizard_progress.setValue(max_val)
+                self._setup_wizard_value_label.setText(f"Input: {max_val}")
+                # Color the progress bar based on phase
+                if self._calibration_phase == "active":
+                    self._setup_wizard_progress.setStyleSheet("""
+                        QProgressBar {
+                            border: 1px solid #333;
+                            border-radius: 4px;
+                            background: #0a0a14;
+                        }
+                        QProgressBar::chunk {
+                            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 #f97316, stop:1 #fb923c);
+                            border-radius: 3px;
+                        }
+                    """)
+                else:
+                    self._setup_wizard_progress.setStyleSheet("""
+                        QProgressBar {
+                            border: 1px solid #333;
+                            border-radius: 4px;
+                            background: #0a0a14;
+                        }
+                        QProgressBar::chunk {
+                            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                                stop:0 #22c55e, stop:1 #4ade80);
+                            border-radius: 3px;
+                        }
+                    """)
+            self._setup_wizard_samples_label.setText(f"Samples: {sample_count}")
 
     def _compute_best_offset(
         self, baseline: list[bytes], active: list[bytes]
@@ -1076,16 +1134,60 @@ class SettingsTab(QWidget):
             self._setup_wizard_dialog = QDialog(self)
             self._setup_wizard_dialog.setWindowTitle("Input Setup Wizard")
             self._setup_wizard_dialog.setModal(True)
-            self._setup_wizard_dialog.setMinimumWidth(400)
-            self._setup_wizard_dialog.setMinimumHeight(200)
+            self._setup_wizard_dialog.setMinimumWidth(450)
+            self._setup_wizard_dialog.setMinimumHeight(280)
 
             layout = QVBoxLayout(self._setup_wizard_dialog)
 
             self._setup_wizard_label = QLabel()
             self._setup_wizard_label.setAlignment(Qt.AlignCenter)
             self._setup_wizard_label.setWordWrap(True)
-            self._setup_wizard_label.setStyleSheet("font-size: 14px; padding: 20px;")
+            self._setup_wizard_label.setStyleSheet("font-size: 14px; padding: 10px;")
             layout.addWidget(self._setup_wizard_label)
+
+            # Live input visualization section
+            viz_frame = QFrame()
+            viz_frame.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
+            viz_frame.setStyleSheet("QFrame { background: #1a1a2e; border-radius: 6px; }")
+            viz_layout = QVBoxLayout(viz_frame)
+            viz_layout.setContentsMargins(15, 10, 15, 10)
+
+            # Input value display
+            self._setup_wizard_value_label = QLabel("Input: --")
+            self._setup_wizard_value_label.setAlignment(Qt.AlignCenter)
+            self._setup_wizard_value_label.setStyleSheet(
+                "font-size: 18px; font-weight: bold; color: #22c55e; padding: 5px;"
+            )
+            viz_layout.addWidget(self._setup_wizard_value_label)
+
+            # Progress bar for input level
+            self._setup_wizard_progress = QProgressBar()
+            self._setup_wizard_progress.setRange(0, 255)
+            self._setup_wizard_progress.setValue(0)
+            self._setup_wizard_progress.setTextVisible(False)
+            self._setup_wizard_progress.setMinimumHeight(20)
+            self._setup_wizard_progress.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #333;
+                    border-radius: 4px;
+                    background: #0a0a14;
+                }
+                QProgressBar::chunk {
+                    background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                        stop:0 #22c55e, stop:1 #4ade80);
+                    border-radius: 3px;
+                }
+            """)
+            viz_layout.addWidget(self._setup_wizard_progress)
+
+            # Samples counter
+            self._setup_wizard_samples_label = QLabel("Samples: 0")
+            self._setup_wizard_samples_label.setAlignment(Qt.AlignCenter)
+            self._setup_wizard_samples_label.setStyleSheet("color: #888; font-size: 11px;")
+            viz_layout.addWidget(self._setup_wizard_samples_label)
+
+            layout.addWidget(viz_frame)
+            self._setup_wizard_viz_frame = viz_frame
 
             layout.addStretch()
 
@@ -1123,19 +1225,30 @@ class SettingsTab(QWidget):
         )
         self._setup_wizard_label.setText(step["instruction"])
 
+        # Reset visualization
+        self._setup_wizard_value_label.setText("Input: --")
+        self._setup_wizard_progress.setValue(0)
+        self._setup_wizard_samples_label.setText("Samples: 0")
+
         step_type = step["type"]
         
         if step_type == "detect_report_len":
+            self._setup_wizard_viz_frame.setVisible(False)
             self._setup_wizard_next_btn.setEnabled(False)
             self._setup_wizard_next_btn.setText("Detecting...")
+            self._set_status(f"Detecting {step['device']} report length...")
             QTimer.singleShot(500, lambda: self._detect_report_length(step))
         elif step_type == "detect_axis":
+            self._setup_wizard_viz_frame.setVisible(True)
             self._setup_wizard_next_btn.setEnabled(False)
             self._setup_wizard_next_btn.setText("Detecting...")
             self._start_axis_detection(step)
         elif step_type == "set_center":
+            self._setup_wizard_viz_frame.setVisible(True)
             self._setup_wizard_next_btn.setEnabled(True)
-            self._setup_wizard_next_btn.setText("Next")
+            self._setup_wizard_next_btn.setText("Capture Center")
+            # Start live steering display for center step
+            self._start_steering_center_preview()
 
     def _detect_report_length(self, step: dict) -> None:
         """Auto-detect the report length for a device."""
@@ -1185,6 +1298,10 @@ class SettingsTab(QWidget):
 
     def _on_wizard_axis_detected(self, axis: str, offset: int, score: float) -> None:
         """Handle axis detection completion in wizard."""
+        # Hide live visualization during result display
+        if hasattr(self, '_setup_wizard_viz_frame'):
+            self._setup_wizard_viz_frame.setVisible(False)
+        
         if score > 100:
             self._setup_wizard_label.setText(
                 f"✓ {axis.capitalize()} detected at byte {offset}\n\nContinuing..."
@@ -1195,8 +1312,78 @@ class SettingsTab(QWidget):
             )
         QTimer.singleShot(1500, self._advance_setup_wizard)
 
+    def _start_steering_center_preview(self) -> None:
+        """Start live preview of steering position for center calibration."""
+        self._steering_preview_timer = QTimer(self)
+        self._steering_preview_timer.setInterval(50)
+        self._steering_preview_timer.timeout.connect(self._update_steering_center_preview)
+        self._steering_preview_timer.start()
+
+    def _stop_steering_center_preview(self) -> None:
+        """Stop the steering center preview timer."""
+        if hasattr(self, '_steering_preview_timer') and self._steering_preview_timer:
+            self._steering_preview_timer.stop()
+            self._steering_preview_timer = None
+
+    def _update_steering_center_preview(self) -> None:
+        """Update the live steering position display in wizard."""
+        if not self._wheel_session.is_open:
+            return
+        if not self._setup_wizard_dialog or not self._setup_wizard_dialog.isVisible():
+            self._stop_steering_center_preview()
+            return
+
+        report = self._wheel_session.read_latest_report(
+            report_len=self._wheel_report_len.value(),
+            max_reads=MAX_READS_PER_TICK,
+        )
+        if not report:
+            return
+
+        s_off = self._steering_offset.value()
+        bits = self._steering_bits.currentData()
+        
+        # Read steering value based on bit depth
+        if bits == 32:
+            if s_off + 3 >= len(report):
+                return
+            raw = report[s_off] | (report[s_off + 1] << 8) | (report[s_off + 2] << 16) | (report[s_off + 3] << 24)
+            value = raw if raw < 0x80000000 else raw - 0x100000000
+            # For 32-bit, normalize to 0-255 range for display
+            display_val = min(255, max(0, abs(value) % 256))
+        elif bits == 16:
+            if s_off + 1 >= len(report):
+                return
+            value = report[s_off] | (report[s_off + 1] << 8)
+            display_val = value >> 8  # Show high byte
+        else:
+            if s_off >= len(report):
+                return
+            value = int(report[s_off])
+            display_val = value
+
+        # Update visualization
+        self._setup_wizard_value_label.setText(f"Steering: {value}")
+        self._setup_wizard_progress.setValue(display_val)
+        self._setup_wizard_progress.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #333;
+                border-radius: 4px;
+                background: #0a0a14;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #3b82f6, stop:1 #60a5fa);
+                border-radius: 3px;
+            }
+        """)
+        QTimer.singleShot(1500, self._advance_setup_wizard)
+
     def _advance_setup_wizard(self) -> None:
         """Move to the next wizard step."""
+        # Stop any running preview timer
+        self._stop_steering_center_preview()
+        
         step = self._setup_wizard_steps[self._setup_wizard_step] if self._setup_wizard_step < len(self._setup_wizard_steps) else None
         
         # Handle set_center step - capture center now
@@ -1245,6 +1432,8 @@ class SettingsTab(QWidget):
             self._setup_wizard_dialog.close()
             self._setup_wizard_dialog = None
 
+        self._stop_steering_center_preview()
+        
         try:
             self.save_current_mapping()
             self._set_status("Input setup complete! Settings saved.")
@@ -1254,6 +1443,7 @@ class SettingsTab(QWidget):
     def _cancel_setup_wizard(self) -> None:
         """Cancel the setup wizard."""
         self._calibration_timer.stop()
+        self._stop_steering_center_preview()
         self._calibration_device = None
         self._calibration_axis = None
         
@@ -1283,22 +1473,74 @@ class SettingsTab(QWidget):
         self._steering_pending_stage = "center"
 
         dlg = QDialog(self)
-        dlg.setWindowTitle("Steering Calibration")
-        dlg.setMinimumWidth(350)
-        dlg.setMinimumHeight(150)
+        dlg.setWindowTitle("Steering Calibration - Step 1 of 3")
+        dlg.setMinimumWidth(420)
+        dlg.setMinimumHeight(280)
         dlg.setModal(True)
         
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 15, 20, 15)
+        layout.setSpacing(12)
+        
+        # Instruction label
         label = QLabel(
-            "Step 1 of 3: Center your wheel and hold.\n\n"
-            "Click Start when ready."
+            "🎯 Hold your wheel at CENTER position\n\n"
+            "Click Start to capture the center point."
         )
         label.setWordWrap(True)
         label.setAlignment(Qt.AlignCenter)
-        label.setMinimumHeight(80)
-        label.setStyleSheet("font-size: 13px; padding: 10px;")
+        label.setStyleSheet("font-size: 13px; padding: 8px;")
+        layout.addWidget(label)
         
-        start_btn = QPushButton("Start")
-        start_btn.setMinimumWidth(80)
+        # Live input visualization
+        viz_frame = QFrame()
+        viz_frame.setFrameStyle(QFrame.StyledPanel | QFrame.Sunken)
+        viz_frame.setStyleSheet("QFrame { background: #1a1a2e; border-radius: 6px; }")
+        viz_layout = QVBoxLayout(viz_frame)
+        viz_layout.setContentsMargins(15, 10, 15, 10)
+
+        # Steering value display
+        steer_value_label = QLabel("Position: --")
+        steer_value_label.setAlignment(Qt.AlignCenter)
+        steer_value_label.setStyleSheet(
+            "font-size: 18px; font-weight: bold; color: #3b82f6; padding: 5px;"
+        )
+        viz_layout.addWidget(steer_value_label)
+
+        # Progress bar for steering position
+        steer_progress = QProgressBar()
+        steer_progress.setRange(0, 255)
+        steer_progress.setValue(128)  # Center
+        steer_progress.setTextVisible(False)
+        steer_progress.setMinimumHeight(20)
+        steer_progress.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #333;
+                border-radius: 4px;
+                background: #0a0a14;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #3b82f6, stop:1 #60a5fa);
+                border-radius: 3px;
+            }
+        """)
+        viz_layout.addWidget(steer_progress)
+
+        # Samples counter
+        samples_label = QLabel("Samples: 0")
+        samples_label.setAlignment(Qt.AlignCenter)
+        samples_label.setStyleSheet("color: #888; font-size: 11px;")
+        viz_layout.addWidget(samples_label)
+
+        layout.addWidget(viz_frame)
+        
+        layout.addStretch()
+        
+        # Buttons
+        start_btn = QPushButton("Start Capture")
+        start_btn.setMinimumWidth(100)
+        start_btn.setMinimumHeight(32)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setMinimumWidth(80)
         start_btn.clicked.connect(self._start_pending_steering_stage)
@@ -1309,20 +1551,25 @@ class SettingsTab(QWidget):
         btns.addWidget(start_btn)
         btns.addWidget(cancel_btn)
         btns.addStretch()
-
-        layout = QVBoxLayout()
-        layout.setContentsMargins(20, 20, 20, 20)
-        layout.setSpacing(15)
-        layout.addWidget(label)
-        layout.addStretch()
         layout.addLayout(btns)
+        
         dlg.setLayout(layout)
 
         self._steering_cal_dialog = dlg
         self._steering_cal_label = label
         self._steering_cal_start_btn = start_btn
+        self._steering_cal_value_label = steer_value_label
+        self._steering_cal_progress = steer_progress
+        self._steering_cal_samples_label = samples_label
+        
+        # Start live preview
+        self._steering_cal_preview_timer = QTimer(self)
+        self._steering_cal_preview_timer.setInterval(50)
+        self._steering_cal_preview_timer.timeout.connect(self._update_steering_cal_preview)
+        self._steering_cal_preview_timer.start()
+        
         self._steering_cal_dialog.show()
-        self._set_status("Steering calibration started...")
+        self._set_status("Steering calibration: Center your wheel and click Start.")
 
     def _start_pending_steering_stage(self) -> None:
         """Begin capture for the current pending stage (center/left/right)."""
@@ -1332,9 +1579,14 @@ class SettingsTab(QWidget):
 
         self._steering_cal_stage = stage
         stage_texts = {
-            "center": "Capturing CENTER position...\n\nHold steady for 3 seconds.",
-            "left": "Capturing full LEFT position...\n\nHold steady for 3 seconds.",
-            "right": "Capturing full RIGHT position...\n\nHold steady for 3 seconds.",
+            "center": "📍 Capturing CENTER position...\n\nHold steady!",
+            "left": "⬅️ Capturing full LEFT position...\n\nHold steady!",
+            "right": "➡️ Capturing full RIGHT position...\n\nHold steady!",
+        }
+        stage_colors = {
+            "center": "#3b82f6",  # Blue
+            "left": "#f97316",   # Orange
+            "right": "#22c55e",  # Green
         }
 
         if stage == "center":
@@ -1345,11 +1597,71 @@ class SettingsTab(QWidget):
             self._steering_right_reports = []
 
         self._set_steering_dialog_text(stage_texts.get(stage, ""))
+        
+        # Update progress bar color for current stage
+        color = stage_colors.get(stage, "#3b82f6")
+        if hasattr(self, '_steering_cal_progress') and self._steering_cal_progress:
+            self._steering_cal_progress.setStyleSheet(f"""
+                QProgressBar {{
+                    border: 1px solid #333;
+                    border-radius: 4px;
+                    background: #0a0a14;
+                }}
+                QProgressBar::chunk {{
+                    background: {color};
+                    border-radius: 3px;
+                }}
+            """)
+        
+        # Reset samples counter
+        if hasattr(self, '_steering_cal_samples_label') and self._steering_cal_samples_label:
+            self._steering_cal_samples_label.setText("Samples: 0")
+        
         if self._steering_cal_start_btn:
             self._steering_cal_start_btn.setEnabled(False)
+            self._steering_cal_start_btn.setText("Capturing...")
+        
+        # Update dialog title
+        step_num = {"center": 1, "left": 2, "right": 3}.get(stage, 1)
+        if self._steering_cal_dialog:
+            self._steering_cal_dialog.setWindowTitle(f"Steering Calibration - Step {step_num} of 3")
+        
+        self._set_status(f"Capturing {stage} position...")
 
         self._steering_cal_timer.start(20)
         QTimer.singleShot(STEERING_CAPTURE_MS, self._complete_steering_stage)
+
+    def _update_steering_cal_preview(self) -> None:
+        """Update live steering position display in calibration dialog."""
+        if not self._wheel_session.is_open:
+            return
+        if not self._steering_cal_dialog or not self._steering_cal_dialog.isVisible():
+            self._stop_steering_cal_preview()
+            return
+
+        report = self._wheel_session.read_latest_report(
+            report_len=64,
+            max_reads=MAX_READS_PER_TICK,
+        )
+        if not report:
+            return
+
+        # Find the byte with the most variance (likely steering)
+        # For preview, just show the max value across all bytes
+        if len(report) > 0:
+            # Use a simple heuristic: find largest value that looks like steering
+            max_val = max(report)
+            
+            if hasattr(self, '_steering_cal_value_label') and self._steering_cal_value_label:
+                self._steering_cal_value_label.setText(f"Position: {max_val}")
+            if hasattr(self, '_steering_cal_progress') and self._steering_cal_progress:
+                self._steering_cal_progress.setValue(max_val)
+
+    def _stop_steering_cal_preview(self) -> None:
+        """Stop the steering calibration preview timer."""
+        if hasattr(self, '_steering_cal_preview_timer') and self._steering_cal_preview_timer:
+            self._steering_cal_preview_timer.stop()
+            self._steering_cal_preview_timer = None
 
     def _set_steering_dialog_text(self, text: str) -> None:
         """Update the steering calibration dialog text."""
@@ -1361,23 +1673,40 @@ class SettingsTab(QWidget):
         self._steering_cal_timer.stop()
         stage = self._steering_cal_stage
         self._steering_cal_stage = None
+        
+        # Get sample count for the completed stage
+        sample_count = 0
+        if stage == "center":
+            sample_count = len(self._steering_center_reports)
+        elif stage == "left":
+            sample_count = len(self._steering_left_reports)
+        elif stage == "right":
+            sample_count = len(self._steering_right_reports)
 
         if stage == "center":
             self._steering_pending_stage = "left"
+            if self._steering_cal_dialog:
+                self._steering_cal_dialog.setWindowTitle("Steering Calibration - Step 2 of 3")
             self._set_steering_dialog_text(
-                "Step 2 of 3: Turn wheel fully LEFT and hold.\n\n"
+                f"✓ Center captured ({sample_count} samples)\n\n"
+                "⬅️ Now turn wheel fully LEFT and hold.\n"
                 "Click Start when ready."
             )
             if self._steering_cal_start_btn:
                 self._steering_cal_start_btn.setEnabled(True)
+                self._steering_cal_start_btn.setText("Start Capture")
         elif stage == "left":
             self._steering_pending_stage = "right"
+            if self._steering_cal_dialog:
+                self._steering_cal_dialog.setWindowTitle("Steering Calibration - Step 3 of 3")
             self._set_steering_dialog_text(
-                "Step 3 of 3: Turn wheel fully RIGHT and hold.\n\n"
+                f"✓ Left captured ({sample_count} samples)\n\n"
+                "➡️ Now turn wheel fully RIGHT and hold.\n"
                 "Click Start when ready."
             )
             if self._steering_cal_start_btn:
                 self._steering_cal_start_btn.setEnabled(True)
+                self._steering_cal_start_btn.setText("Start Capture")
         elif stage == "right":
             self._steering_pending_stage = None
             self._finish_steering_range_calibration()
@@ -1387,6 +1716,7 @@ class SettingsTab(QWidget):
     def _cancel_steering_calibration(self, dialog: QDialog | None = None) -> None:
         """Abort steering calibration and cleanup dialog/timers."""
         self._steering_cal_timer.stop()
+        self._stop_steering_cal_preview()
         self._steering_pending_stage = None
         self._steering_cal_stage = None
         self._close_steering_cal_dialog(dialog)
@@ -1394,6 +1724,7 @@ class SettingsTab(QWidget):
 
     def _close_steering_cal_dialog(self, dialog: QDialog | None = None) -> None:
         """Close and clean up the steering calibration dialog."""
+        self._stop_steering_cal_preview()
         dlg = dialog or self._steering_cal_dialog
         if dlg is not None:
             try:
@@ -1403,6 +1734,9 @@ class SettingsTab(QWidget):
         self._steering_cal_dialog = None
         self._steering_cal_label = None
         self._steering_cal_start_btn = None
+        self._steering_cal_value_label = None
+        self._steering_cal_progress = None
+        self._steering_cal_samples_label = None
 
     def _capture_steering_calibration_sample(self) -> None:
         """Capture raw HID report during steering calibration for auto-detection."""
@@ -1419,12 +1753,26 @@ class SettingsTab(QWidget):
             return
 
         # Store the full raw report for auto-detection analysis
+        sample_count = 0
         if self._steering_cal_stage == "center":
             self._steering_center_reports.append(bytes(report))
+            sample_count = len(self._steering_center_reports)
         elif self._steering_cal_stage == "left":
             self._steering_left_reports.append(bytes(report))
+            sample_count = len(self._steering_left_reports)
         elif self._steering_cal_stage == "right":
             self._steering_right_reports.append(bytes(report))
+            sample_count = len(self._steering_right_reports)
+
+        # Update live visualization
+        if len(report) > 0:
+            max_val = max(report)
+            if hasattr(self, '_steering_cal_value_label') and self._steering_cal_value_label:
+                self._steering_cal_value_label.setText(f"Position: {max_val}")
+            if hasattr(self, '_steering_cal_progress') and self._steering_cal_progress:
+                self._steering_cal_progress.setValue(max_val)
+            if hasattr(self, '_steering_cal_samples_label') and self._steering_cal_samples_label:
+                self._steering_cal_samples_label.setText(f"Samples: {sample_count}")
 
     def _finish_steering_range_calibration(self) -> None:
         """Complete steering calibration with auto-detection of offset and bit depth."""

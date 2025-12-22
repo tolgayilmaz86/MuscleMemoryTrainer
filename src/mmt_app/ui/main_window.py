@@ -179,6 +179,12 @@ class MainWindow(QMainWindow):
         """Handle grid step changes from SettingsTab."""
         if hasattr(self, "_telemetry_tab"):
             self._telemetry_tab.set_grid_step(step)
+        if hasattr(self, "_threshold_training_tab"):
+            self._threshold_training_tab.set_grid_step(step)
+        if hasattr(self, "_trail_brake_tab"):
+            self._trail_brake_tab.set_grid_step(step)
+        if hasattr(self, "_active_brake_tab"):
+            self._active_brake_tab.set_grid_step(step)
 
     def _on_settings_update_rate_changed(self, hz: int) -> None:
         """Handle update rate changes from SettingsTab."""
@@ -291,6 +297,10 @@ class MainWindow(QMainWindow):
                 self._telemetry_tab.set_throttle_target(ui_cfg.throttle_target)
                 self._telemetry_tab.set_brake_target(ui_cfg.brake_target)
                 self._telemetry_tab.set_grid_step(ui_cfg.grid_step_percent)
+                # Set grid step on all training tabs
+                self._threshold_training_tab.set_grid_step(ui_cfg.grid_step_percent)
+                self._trail_brake_tab.set_grid_step(ui_cfg.grid_step_percent)
+                self._active_brake_tab.set_grid_step(ui_cfg.grid_step_percent)
                 self._set_update_rate(ui_cfg.update_hz)
                 self._set_show_steering(ui_cfg.show_steering)
                 self._set_show_watermark(ui_cfg.show_watermark)

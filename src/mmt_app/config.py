@@ -97,9 +97,9 @@ DEFAULT_STEERING_HALF_RANGE: int = 32767  # Default for 16-bit (0-65535)
 DEFAULT_STEERING_BITS: int = 16  # 8, 16, or 32
 
 # UI defaults
-DEFAULT_THROTTLE_TARGET: int = 60
-DEFAULT_BRAKE_TARGET: int = 40
-DEFAULT_GRID_STEP_PERCENT: int = 10
+DEFAULT_THROTTLE_TARGET: int = 100
+DEFAULT_BRAKE_TARGET: int = 80
+DEFAULT_GRID_STEP_PERCENT: int = 20
 DEFAULT_UPDATE_HZ: int = 60
 DEFAULT_SHOW_STEERING: bool = True
 DEFAULT_SHOW_WATERMARK: bool = True
@@ -433,7 +433,7 @@ def load_threshold_training_config() -> ThresholdTrainingConfig:
         speed = DEFAULT_THRESHOLD_SPEED
     # Clamp values to valid ranges
     step = max(5, min(25, step))
-    speed = max(30, min(120, speed))
+    speed = max(1, min(10, speed))
     return ThresholdTrainingConfig(step=step, speed=speed)
 
 

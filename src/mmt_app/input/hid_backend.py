@@ -28,14 +28,33 @@ def hid_available() -> bool:
     return hid is not None
 
 
+# Generic receiver device names to filter out (case-insensitive)
+_FILTERED_DEVICE_NAMES = frozenset({
+    "usb receiver",
+    "wireless receiver",
+    "nano receiver",
+    "unifying receiver",
+    "gaming kb",
+    "mystic light",
+    "razer blackshark"
+})
+
+
 def enumerate_devices() -> list[HidDeviceInfo]:
-    """Return a filtered list of HID devices with a product name."""
+    """Return a filtered list of HID devices with a product name.
+
+    Filters out devices without product names and generic USB receivers
+    that typically don't provide useful input data.
+    """
     if hid is None:
         return []
     devices = []
     for d in hid.enumerate():
         product = (d.get("product_string") or "").strip()
         if not product:
+            continue
+        # Skip generic receiver devices
+        if product.lower() in _FILTERED_DEVICE_NAMES:
             continue
         vendor_id = int(d.get("vendor_id") or 0)
         product_id = int(d.get("product_id") or 0)

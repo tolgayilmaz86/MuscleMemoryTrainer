@@ -580,3 +580,16 @@ class TrailBrakeTab(QWidget):
         """Set watermark visibility (called from settings)."""
         self._watermark_visible = visible
         self._chart_view.set_watermark_visible(visible)
+
+    def set_grid_step(self, step_percent: int) -> None:
+        """Set the grid step from global settings.
+
+        Args:
+            step_percent: Grid step percentage (10, 20, 30, 40, 50).
+        """
+        step_percent = max(5, min(50, int(step_percent)))
+        tick_count = int((100 - 0) / step_percent) + 1
+        try:
+            self._axis_y.setTickCount(tick_count)
+        except Exception:
+            pass
