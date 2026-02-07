@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muscle-memory-trainer"
-version = "1.2.0"
+dynamic = ["version"]
 description = "Muscle Memory Trainer - PySide6 desktop app."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -32,3 +32,6 @@ packages = ["src/mmt_app"]
 line-length = 100
 target-version = "py310"
 select = ["E", "F", "I"]
+
+[tool.hatch.version]
+path = "src/mmt_app/__init__.py"

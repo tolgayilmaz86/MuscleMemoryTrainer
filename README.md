@@ -5,6 +5,7 @@ A PySide6 desktop application for sim racers to practice throttle, brake, and st
 ![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)
 ![PySide6](https://img.shields.io/badge/PySide6-6.7+-green.svg)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-orange.svg)](https://buymeacoffee.com/tlgylmz)
 
 ## Screenshots
 
@@ -32,6 +33,9 @@ And more to come...
 - [Testing](#testing)
 - [Contributing](#contributing)
 - [Troubleshooting](#troubleshooting)
+- [Support](#support)
+- [Dependencies](#dependencies)
+- [License](#license)
 
 ---
 
@@ -343,6 +347,12 @@ When reporting bugs, please include:
 - **pyinstaller** (≥6.6): Executable packaging
 
 ---
+
+## Support
+
+If you find this tool helpful and would like to support its development, you can buy me a coffee:
+
+[![Buy Me A Coffee](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://buymeacoffee.com/tlgylmz)
 
 ## License
 

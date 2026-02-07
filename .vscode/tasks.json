@@ -4,24 +4,63 @@
     {
       "label": "PyInstaller build",
       "type": "shell",
-      "command": "pyinstaller mmt_app.spec --noconfirm",
-      "options": { "venv": ".venv" },
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe -m PyInstaller mmt_app.spec --noconfirm",
+      "windows": {
+        "command": "${workspaceFolder}/.venv/Scripts/python.exe -m PyInstaller mmt_app.spec --noconfirm"
+      },
+      "linux": {
+        "command": "${workspaceFolder}/.venv/bin/python -m PyInstaller mmt_app.spec --noconfirm"
+      },
+      "osx": {
+        "command": "${workspaceFolder}/.venv/bin/python -m PyInstaller mmt_app.spec --noconfirm"
+      },
+      "options": {
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}/src"
+        }
+      },
       "group": "build",
       "problemMatcher": []
     },
     {
       "label": "PyInstaller clean build",
       "type": "shell",
-      "command": "pyinstaller mmt_app.spec --clean --noconfirm",
-      "options": { "venv": ".venv" },
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe -m PyInstaller mmt_app.spec --clean --noconfirm",
+      "windows": {
+        "command": "${workspaceFolder}/.venv/Scripts/python.exe -m PyInstaller mmt_app.spec --clean --noconfirm"
+      },
+      "linux": {
+        "command": "${workspaceFolder}/.venv/bin/python -m PyInstaller mmt_app.spec --clean --noconfirm"
+      },
+      "osx": {
+        "command": "${workspaceFolder}/.venv/bin/python -m PyInstaller mmt_app.spec --clean --noconfirm"
+      },
+      "options": {
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}/src"
+        }
+      },
       "group": "build",
       "problemMatcher": []
     },
     {
       "label": "Run tests",
       "type": "shell",
-      "command": "pytest -v",
-      "options": { "venv": ".venv" },
+      "command": "${workspaceFolder}/.venv/Scripts/python.exe -m pytest -v",
+      "windows": {
+        "command": "${workspaceFolder}/.venv/Scripts/python.exe -m pytest -v"
+      },
+      "linux": {
+        "command": "${workspaceFolder}/.venv/bin/python -m pytest -v"
+      },
+      "osx": {
+        "command": "${workspaceFolder}/.venv/bin/python -m pytest -v"
+      },
+      "options": {
+        "env": {
+          "PYTHONPATH": "${workspaceFolder}/src"
+        }
+      },
       "group": "test",
       "problemMatcher": []
     }

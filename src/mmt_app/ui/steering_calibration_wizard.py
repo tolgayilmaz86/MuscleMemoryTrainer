@@ -94,24 +94,34 @@ class SteeringCalibrationWizard(QDialog):
 
     def _build_ui(self) -> None:
         """Construct the wizard dialog layout."""
-        self.setWindowTitle("Steering Calibration - Step 1 of 3")
-        self.setMinimumWidth(420)
-        self.setMinimumHeight(280)
+        self.setWindowTitle("Wheel Calibration - Step 1 of 3")
+        self.setMinimumWidth(500)
+        self.setMinimumHeight(380)
         self.setModal(True)
 
         layout = QVBoxLayout()
         layout.setContentsMargins(20, 15, 20, 15)
         layout.setSpacing(12)
 
-        # Instruction label
-        self._label = QLabel(
-            "🎯 Hold your wheel at CENTER position\n\n"
-            "Click Start to capture the center point."
-        )
+        # Step indicator
+        self._step_label = QLabel("Step 1 of 3")
+        self._step_label.setAlignment(Qt.AlignCenter)
+        self._step_label.setStyleSheet("font-size: 12px; color: #888; padding: 5px;")
+        layout.addWidget(self._step_label)
+
+        # Main instruction label
+        self._label = QLabel()
         self._label.setWordWrap(True)
         self._label.setAlignment(Qt.AlignCenter)
-        self._label.setStyleSheet("font-size: 13px; padding: 8px;")
+        self._label.setStyleSheet("font-size: 15px; font-weight: bold; padding: 10px; color: #fff;")
         layout.addWidget(self._label)
+
+        # Detailed instruction
+        self._detail_label = QLabel()
+        self._detail_label.setWordWrap(True)
+        self._detail_label.setAlignment(Qt.AlignCenter)
+        self._detail_label.setStyleSheet("font-size: 13px; color: #aaa; padding: 8px;")
+        layout.addWidget(self._detail_label)
 
         # Live input visualization
         viz_frame = QFrame()
@@ -167,7 +177,8 @@ class SteeringCalibrationWizard(QDialog):
 
         # Start live preview
         self._preview_timer.start()
-        self._on_status_update("Steering calibration: Center your wheel and click Start.")
+        self._update_instructions_for_stage("center")
+        self._on_status_update("Wheel calibration: Center your wheel and click Start Capture.")
 
     def _set_progress_color(self, color: str) -> None:
         """Set the progress bar chunk color."""
@@ -187,6 +198,34 @@ class SteeringCalibrationWizard(QDialog):
     # Capture workflow
     # -------------------------------------------------------------------------
 
+    def _update_instructions_for_stage(self, stage: str) -> None:
+        """Update instructions for the given stage."""
+        step_num = {"center": 1, "left": 2, "right": 3}.get(stage, 1)
+        self._step_label.setText(f"Step {step_num} of 3")
+        self.setWindowTitle(f"Wheel Calibration - Step {step_num} of 3")
+
+        if stage == "center":
+            self._label.setText("🎯 Step 1: Capture Center Position")
+            self._detail_label.setText(
+                "Hold your wheel perfectly CENTERED (straight ahead).\n"
+                "Make sure it's not turned left or right.\n"
+                "Click 'Start Capture' when ready."
+            )
+        elif stage == "left":
+            self._label.setText("⬅️ Step 2: Capture Full Left Position")
+            self._detail_label.setText(
+                "Turn your wheel FULLY to the LEFT (as far as it goes).\n"
+                "Hold it steady at the maximum left position.\n"
+                "Click 'Start Capture' when ready."
+            )
+        elif stage == "right":
+            self._label.setText("➡️ Step 3: Capture Full Right Position")
+            self._detail_label.setText(
+                "Turn your wheel FULLY to the RIGHT (as far as it goes).\n"
+                "Hold it steady at the maximum right position.\n"
+                "Click 'Start Capture' when ready."
+            )
+
     def _start_capture(self) -> None:
         """Begin capture for the current pending stage."""
         stage = self._state.pending_stage
@@ -195,11 +234,6 @@ class SteeringCalibrationWizard(QDialog):
 
         self._state.current_stage = stage
 
-        stage_texts = {
-            "center": "📍 Capturing CENTER position...\n\nHold steady!",
-            "left": "⬅️ Capturing full LEFT position...\n\nHold steady!",
-            "right": "➡️ Capturing full RIGHT position...\n\nHold steady!",
-        }
         stage_colors = {
             "center": "#3b82f6",
             "left": "#f97316",
@@ -209,19 +243,24 @@ class SteeringCalibrationWizard(QDialog):
         # Clear samples for current stage
         if stage == "center":
             self._state.center_reports = []
+            self._label.setText("📍 Capturing CENTER position...")
+            self._detail_label.setText("Hold wheel steady at center. Capturing for 2 seconds...")
         elif stage == "left":
             self._state.left_reports = []
+            self._label.setText("⬅️ Capturing full LEFT position...")
+            self._detail_label.setText("Hold wheel steady at full left. Capturing for 2 seconds...")
         else:
             self._state.right_reports = []
+            self._label.setText("➡️ Capturing full RIGHT position...")
+            self._detail_label.setText("Hold wheel steady at full right. Capturing for 2 seconds...")
 
-        self._label.setText(stage_texts.get(stage, ""))
         self._set_progress_color(stage_colors.get(stage, "#3b82f6"))
         self._samples_label.setText("Samples: 0")
         self._start_btn.setEnabled(False)
         self._start_btn.setText("Capturing...")
 
         step_num = {"center": 1, "left": 2, "right": 3}.get(stage, 1)
-        self.setWindowTitle(f"Steering Calibration - Step {step_num} of 3")
+        self.setWindowTitle(f"Wheel Calibration - Step {step_num} of 3")
 
         self._on_status_update(f"Capturing {stage} position...")
 
@@ -245,22 +284,16 @@ class SteeringCalibrationWizard(QDialog):
 
         if stage == "center":
             self._state.pending_stage = "left"
-            self.setWindowTitle("Steering Calibration - Step 2 of 3")
-            self._label.setText(
-                f"✓ Center captured ({sample_count} samples)\n\n"
-                "⬅️ Now turn wheel fully LEFT and hold.\n"
-                "Click Start when ready."
-            )
+            self._label.setText(f"✓ Center captured ({sample_count} samples)")
+            self._detail_label.setText("Great! Now proceed to the next step.")
+            self._update_instructions_for_stage("left")
             self._start_btn.setEnabled(True)
             self._start_btn.setText("Start Capture")
         elif stage == "left":
             self._state.pending_stage = "right"
-            self.setWindowTitle("Steering Calibration - Step 3 of 3")
-            self._label.setText(
-                f"✓ Left captured ({sample_count} samples)\n\n"
-                "➡️ Now turn wheel fully RIGHT and hold.\n"
-                "Click Start when ready."
-            )
+            self._label.setText(f"✓ Left captured ({sample_count} samples)")
+            self._detail_label.setText("Great! Now proceed to the final step.")
+            self._update_instructions_for_stage("right")
             self._start_btn.setEnabled(True)
             self._start_btn.setText("Start Capture")
         elif stage == "right":

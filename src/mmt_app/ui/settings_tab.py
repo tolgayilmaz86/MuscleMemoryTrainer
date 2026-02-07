@@ -47,7 +47,10 @@ from mmt_app.ui.steering_calibration_wizard import (
     SteeringCalibrationWizard,
     SteeringCalibrationResult,
 )
-from mmt_app.ui.input_setup_wizard import InputSetupWizard, InputSetupResult
+from mmt_app.ui.pedals_calibration_wizard import (
+    PedalsCalibrationWizard,
+    PedalsCalibrationResult,
+)
 
 if TYPE_CHECKING:
     from mmt_app.telemetry import TelemetrySample
@@ -112,7 +115,7 @@ class SettingsTab(QWidget):
 
         self._calibration_settings = CalibrationSettingsGroup(
             parent=self,
-            on_setup_wizard=self._start_input_setup_wizard,
+            on_calibrate_pedals=self._start_pedals_calibration,
             on_calibrate_steering=self._start_steering_calibration,
             on_steering_range_changed=self._on_steering_range_changed,
         )
@@ -459,52 +462,34 @@ class SettingsTab(QWidget):
     # Calibration wizards
     # -------------------------------------------------------------------------
 
-    def _start_input_setup_wizard(self) -> None:
-        """Start the comprehensive input setup wizard."""
-        if not self.pedals_session.is_open and not self.wheel_session.is_open:
-            self._set_status("Select pedals and/or wheel HID device first, then click Connect.")
+    def _start_pedals_calibration(self) -> None:
+        """Start the pedals calibration wizard."""
+        if not self.pedals_session.is_open:
+            self._set_status("Select pedals HID device first, then click Connect.")
             return
 
-        wizard = InputSetupWizard(
+        wizard = PedalsCalibrationWizard(
             parent=self,
             pedals_session=self.pedals_session,
-            wheel_session=self.wheel_session,
-            get_pedals_report_len=lambda: self._calibration_settings.pedals_report_len,
-            get_wheel_report_len=lambda: self._calibration_settings.wheel_report_len,
-            get_steering_offset=lambda: self._calibration_settings.steering_offset,
-            get_steering_bits=lambda: self._calibration_settings.steering_bits,
-            on_axis_detected=self._on_axis_detected,
-            on_report_len_detected=self._on_report_len_detected,
-            on_steering_center_captured=self._on_steering_center_captured,
-            on_complete=self._on_setup_wizard_complete,
+            on_complete=self._on_pedals_calibration_complete,
             on_status_update=self._set_status,
         )
         wizard.show()
 
-    def _on_axis_detected(self, device: str, axis: str, offset: int, score: float) -> None:
-        """Handle axis detection from setup wizard."""
-        if axis == "throttle":
-            self._calibration_settings.set_throttle_offset(offset)
-        elif axis == "brake":
-            self._calibration_settings.set_brake_offset(offset)
-        elif axis == "steering":
-            self._calibration_settings.set_steering_offset(offset)
+    def _on_pedals_calibration_complete(self, result: PedalsCalibrationResult) -> None:
+        """Handle pedals calibration completion."""
+        if result.report_len:
+            self._calibration_settings.set_pedals_report_len(result.report_len)
+        if result.throttle_offset is not None:
+            self._calibration_settings.set_throttle_offset(result.throttle_offset)
+        if result.brake_offset is not None:
+            self._calibration_settings.set_brake_offset(result.brake_offset)
 
-    def _on_report_len_detected(self, device: str, length: int) -> None:
-        """Handle report length detection from setup wizard."""
-        if device == "pedals":
-            self._calibration_settings.set_pedals_report_len(length)
-        else:
-            self._calibration_settings.set_wheel_report_len(length)
-
-    def _on_steering_center_captured(self, center: int) -> None:
-        """Handle steering center capture from setup wizard."""
-        self._steering_center = center
-
-    def _on_setup_wizard_complete(self, result: InputSetupResult) -> None:
-        """Handle setup wizard completion."""
         try:
             self.save_current_mapping()
+            self._set_status(
+                f"Pedals calibrated: throttle={result.throttle_offset}, brake={result.brake_offset}"
+            )
         except Exception:
             pass
 

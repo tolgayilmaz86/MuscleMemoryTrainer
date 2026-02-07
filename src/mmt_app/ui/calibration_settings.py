@@ -47,7 +47,7 @@ class CalibrationSettingsGroup(QGroupBox):
         self,
         parent: QWidget | None = None,
         *,
-        on_setup_wizard: Callable[[], None] | None = None,
+        on_calibrate_pedals: Callable[[], None] | None = None,
         on_calibrate_steering: Callable[[], None] | None = None,
         on_steering_range_changed: Callable[[int], None] | None = None,
     ) -> None:
@@ -55,13 +55,13 @@ class CalibrationSettingsGroup(QGroupBox):
 
         Args:
             parent: Parent widget.
-            on_setup_wizard: Callback when setup wizard button clicked.
+            on_calibrate_pedals: Callback when calibrate pedals button clicked.
             on_calibrate_steering: Callback when calibrate steering button clicked.
             on_steering_range_changed: Callback when steering range slider changes.
         """
         super().__init__("Calibration", parent)
 
-        self._on_setup_wizard = on_setup_wizard or (lambda: None)
+        self._on_calibrate_pedals = on_calibrate_pedals or (lambda: None)
         self._on_calibrate_steering = on_calibrate_steering or (lambda: None)
         self._on_steering_range_changed = on_steering_range_changed or (lambda _: None)
 
@@ -149,25 +149,34 @@ class CalibrationSettingsGroup(QGroupBox):
         """Construct the calibration settings layout."""
         layout = QVBoxLayout(self)
 
-        # Setup wizard and calibrate steering buttons
-        wizard_row = QWidget()
-        wizard_layout = QHBoxLayout(wizard_row)
-        wizard_layout.setContentsMargins(0, 0, 0, 0)
+        # Calibration buttons - separate for pedals and wheel
+        calibration_row = QWidget()
+        calibration_layout = QHBoxLayout(calibration_row)
+        calibration_layout.setContentsMargins(0, 0, 0, 0)
+        calibration_layout.setSpacing(10)
 
-        setup_wizard_btn = QPushButton("🔧 Input Setup Wizard")
-        setup_wizard_btn.setToolTip("Auto-detect pedal and wheel settings - recommended for first-time setup")
-        setup_wizard_btn.clicked.connect(self._on_setup_wizard)
-        setup_wizard_btn.setMinimumHeight(32)
+        calibrate_pedals_btn = QPushButton("🎮 Calibrate Pedals")
+        calibrate_pedals_btn.setToolTip(
+            "Auto-detect throttle and brake pedal settings.\n"
+            "Guided wizard will detect report length and byte offsets."
+        )
+        calibrate_pedals_btn.clicked.connect(self._on_calibrate_pedals)
+        calibrate_pedals_btn.setMinimumHeight(36)
+        calibrate_pedals_btn.setStyleSheet("font-weight: bold;")
 
-        calibrate_steering_btn = QPushButton("🔄 Calibrate Steering")
-        calibrate_steering_btn.setToolTip("Full calibration: turn wheel fully left, then right to find center")
+        calibrate_steering_btn = QPushButton("🔄 Calibrate Wheel")
+        calibrate_steering_btn.setToolTip(
+            "Full wheel calibration: detect steering offset, bit depth, center, and range.\n"
+            "Turn wheel fully left, then right to find center position."
+        )
         calibrate_steering_btn.clicked.connect(self._on_calibrate_steering)
-        calibrate_steering_btn.setMinimumHeight(32)
+        calibrate_steering_btn.setMinimumHeight(36)
+        calibrate_steering_btn.setStyleSheet("font-weight: bold;")
 
-        wizard_layout.addWidget(setup_wizard_btn)
-        wizard_layout.addWidget(calibrate_steering_btn)
-        wizard_layout.addStretch()
-        layout.addWidget(wizard_row)
+        calibration_layout.addWidget(calibrate_pedals_btn)
+        calibration_layout.addWidget(calibrate_steering_btn)
+        calibration_layout.addStretch()
+        layout.addWidget(calibration_row)
 
         # Steering range slider
         form = QFormLayout()

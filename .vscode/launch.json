@@ -3,36 +3,47 @@
   "configurations": [
     {
       "name": "Run MuscleMemoryTrainer",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "module": "mmt_app",
       "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
       "env": {
         "PYTHONPATH": "${workspaceFolder}/src"
       }
     },
     {
       "name": "Build",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/.venv/Scripts/pyinstaller.exe",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "module": "PyInstaller",
       "args": ["mmt_app.spec", "--noconfirm"],
       "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
     },
     {
       "name": "Clean Build",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/.venv/Scripts/pyinstaller.exe",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "module": "PyInstaller",
       "args": ["mmt_app.spec", "--clean", "--noconfirm"],
       "console": "integratedTerminal",
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
     },
     {
       "name": "Run Tests",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
       "module": "pytest",
       "args": ["-v"],
       "console": "integratedTerminal",
