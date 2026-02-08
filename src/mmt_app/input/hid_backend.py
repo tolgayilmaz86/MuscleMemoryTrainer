@@ -74,10 +74,32 @@ class HidSession:
 
     def __init__(self) -> None:
         self._handle = None
+        self._device_info: HidDeviceInfo | None = None
 
     @property
     def is_open(self) -> bool:
         return self._handle is not None
+
+    @property
+    def vendor_id(self) -> int | None:
+        """Return the vendor ID of the currently open device."""
+        if self._device_info is None:
+            return None
+        return self._device_info.device_id.vendor_id
+
+    @property
+    def product_id(self) -> int | None:
+        """Return the product ID of the currently open device."""
+        if self._device_info is None:
+            return None
+        return self._device_info.device_id.product_id
+
+    @property
+    def product_string(self) -> str | None:
+        """Return the product string of the currently open device."""
+        if self._device_info is None:
+            return None
+        return self._device_info.product_string
 
     def open(self, device: HidDeviceInfo) -> None:
         if hid is None:
@@ -90,6 +112,7 @@ class HidSession:
             handle.open(device.device_id.vendor_id, device.device_id.product_id)
         handle.set_nonblocking(True)
         self._handle = handle
+        self._device_info = device
 
     def close(self) -> None:
         if self._handle is None:
@@ -98,6 +121,7 @@ class HidSession:
             self._handle.close()
         finally:
             self._handle = None
+            self._device_info = None
 
     def read_latest_report(self, *, report_len: int, max_reads: int = 50) -> Optional[list[int]]:
         """Drain the read queue and return the most recent report (or None)."""

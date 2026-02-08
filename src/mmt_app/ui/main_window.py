@@ -439,7 +439,10 @@ class MainWindow(QMainWindow):
         - values below center = negative (left)
         - values above center = positive (right)
         """
-        center = float(self._settings_tab.steering_center or 128)
+        # For 8-bit, default center is 128 (middle of 0-255)
+        center = float(self._settings_tab.steering_center)
+        if center == 0 or center == 128:  # Use 8-bit default if not calibrated
+            center = 128.0
         # Use calibrated half-range, or default to 127 for 8-bit
         half_range = float(self._settings_tab.steering_half_range)
         if half_range > 255:
@@ -458,7 +461,10 @@ class MainWindow(QMainWindow):
         - values below center = negative (left)
         - values above center = positive (right)
         """
-        center = float(self._settings_tab.steering_center or 32768)
+        # For 16-bit, default center is 32768 (middle of 0-65535)
+        center = float(self._settings_tab.steering_center)
+        if center < 256:  # Center looks like 8-bit default, use 16-bit default instead
+            center = 32768.0
         # Use calibrated half-range from steering calibration
         span = max(float(self._settings_tab.steering_half_range), 1.0)  # Avoid division by zero
         normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)
@@ -474,7 +480,8 @@ class MainWindow(QMainWindow):
         - values below center = negative (left)
         - values above center = positive (right)
         """
-        center = float(self._settings_tab.steering_center or 0)
+        # For 32-bit signed, center is typically 0
+        center = float(self._settings_tab.steering_center)
         # Use calibrated half-range from steering calibration
         span = max(float(self._settings_tab.steering_half_range), 1.0)  # Avoid division by zero
         normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)

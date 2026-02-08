@@ -1,7 +1,8 @@
 """Steering calibration wizard for wheel center and range detection.
 
 Provides a multi-step dialog to capture center, left, and right positions
-and auto-detect steering parameters.
+and auto-detect steering parameters. Supports known device presets for
+instant configuration of popular wheels.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from mmt_app.input.hid_backend import HidSession
 from mmt_app.input.calibration import MAX_READS_PER_TICK, STEERING_CAPTURE_MS
+from mmt_app.input.device_presets import find_wheel_preset, WheelPreset
 
 
 @dataclass
@@ -78,9 +81,94 @@ class SteeringCalibrationWizard(QDialog):
 
         self._state = SteeringCalibrationState()
         self._state.pending_stage = "center"
+        self._preset: WheelPreset | None = None
+
+        # Check for known device preset
+        self._check_for_preset()
 
         self._setup_timers()
         self._build_ui()
+
+    def _check_for_preset(self) -> None:
+        """Check if the connected wheel matches a known preset."""
+        if not self._wheel_session.is_open:
+            return
+
+        vendor_id = self._wheel_session.vendor_id
+        product_id = self._wheel_session.product_id
+
+        if vendor_id and product_id:
+            self._preset = find_wheel_preset(vendor_id, product_id)
+
+    def _offer_preset(self) -> bool:
+        """Offer to use a known preset if available.
+
+        Returns:
+            True if user accepted the preset and calibration is complete,
+            False if user wants manual calibration.
+        """
+        if not self._preset:
+            return False
+
+        reply = QMessageBox.question(
+            self,
+            "Known Device Detected",
+            f"Your wheel '{self._preset.name}' is recognized!\n\n"
+            f"Pre-configured settings:\n"
+            f"  • Steering offset: {self._preset.steering_offset}\n"
+            f"  • Bit depth: {self._preset.steering_bits}-bit\n\n"
+            "Would you like to use these settings?\n"
+            "(Click 'No' to run manual calibration instead)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if reply == QMessageBox.Yes:
+            self._apply_preset()
+            return True
+        return False
+
+    def _apply_preset(self) -> None:
+        """Apply the detected preset and complete calibration."""
+        if not self._preset:
+            return
+
+        # Read current center value from wheel
+        center = 128  # Default
+        if self._wheel_session.is_open:
+            report = self._wheel_session.read_latest_report(
+                report_len=self._preset.report_len, max_reads=MAX_READS_PER_TICK
+            )
+            if report and self._preset.steering_offset < len(report):
+                if self._preset.steering_bits == 16:
+                    offset = self._preset.steering_offset
+                    if offset + 2 <= len(report):
+                        center = report[offset] | (report[offset + 1] << 8)
+                elif self._preset.steering_bits == 8:
+                    center = report[self._preset.steering_offset]
+
+        # Calculate reasonable half-range based on bit depth
+        if self._preset.steering_bits == 16:
+            half_range = 32767  # 16-bit signed half-range
+        elif self._preset.steering_bits == 8:
+            half_range = 127  # 8-bit half-range
+        else:
+            half_range = 128
+
+        result = SteeringCalibrationResult(
+            offset=self._preset.steering_offset,
+            bits=self._preset.steering_bits,
+            center=center,
+            half_range=half_range,
+            report_len=self._preset.report_len,
+        )
+
+        self._on_complete(result)
+        self._on_status_update(
+            f"Using preset for {self._preset.name}: offset {result.offset}, "
+            f"{result.bits}-bit, center={result.center}"
+        )
+        self.close()
 
     def _setup_timers(self) -> None:
         """Configure internal timers."""
@@ -372,7 +460,14 @@ class SteeringCalibrationWizard(QDialog):
         self.close()
 
     def _detect_parameters(self) -> SteeringCalibrationResult | None:
-        """Auto-detect steering byte offset, bit depth, center, and half-range."""
+        """Auto-detect steering byte offset, bit depth, center, and half-range.
+
+        Uses an improved algorithm that:
+        1. Prioritizes 8-bit and 16-bit values (most common for steering)
+        2. Requires low variance at center (stable when not moving)
+        3. Requires distinct left/right values with center between them
+        4. Uses a scoring system considering range, stability, and bit preference
+        """
         state = self._state
 
         if not state.center_reports or not state.left_reports or not state.right_reports:
@@ -382,74 +477,149 @@ class SteeringCalibrationWizard(QDialog):
         if report_len < 2:
             return None
 
-        def read_value(report: bytes, offset: int, bits: int) -> int | None:
-            if bits == 32 and offset + 4 <= len(report):
-                raw = (report[offset] | (report[offset + 1] << 8) |
-                       (report[offset + 2] << 16) | (report[offset + 3] << 24))
-                return raw if raw < 0x80000000 else raw - 0x100000000
-            elif bits == 16 and offset + 2 <= len(report):
-                return report[offset] | (report[offset + 1] << 8)
-            elif bits == 8 and offset + 1 <= len(report):
-                return report[offset]
+        candidates = self._find_steering_candidates(report_len)
+
+        if not candidates:
             return None
 
-        best_offset = None
-        best_bits = None
-        best_range = 0
-
-        for bits in [32, 16, 8]:
-            num_bytes = bits // 8
-            for offset in range(report_len - num_bytes + 1):
-                center_vals = [read_value(r, offset, bits) for r in state.center_reports]
-                left_vals = [read_value(r, offset, bits) for r in state.left_reports]
-                right_vals = [read_value(r, offset, bits) for r in state.right_reports]
-
-                if None in center_vals or None in left_vals or None in right_vals:
-                    continue
-
-                center_avg = sum(center_vals) / len(center_vals)
-                left_avg = sum(left_vals) / len(left_vals)
-                right_avg = sum(right_vals) / len(right_vals)
-
-                total_range = abs(right_avg - left_avg)
-                if total_range < 50:
-                    continue
-
-                min_val = min(left_avg, right_avg)
-                max_val = max(left_avg, right_avg)
-                margin = total_range * 0.3
-                center_in_range = (min_val - margin) <= center_avg <= (max_val + margin)
-
-                if not center_in_range:
-                    continue
-
-                if total_range > best_range:
-                    best_range = total_range
-                    best_offset = offset
-                    best_bits = bits
-
-        if best_offset is None or best_bits is None:
-            return None
-
-        # Compute final values
-        center_vals = [read_value(r, best_offset, best_bits) for r in state.center_reports]
-        left_vals = [read_value(r, best_offset, best_bits) for r in state.left_reports]
-        right_vals = [read_value(r, best_offset, best_bits) for r in state.right_reports]
-
-        center_val = int(sum(center_vals) / len(center_vals))
-        left_val = int(sum(left_vals) / len(left_vals))
-        right_val = int(sum(right_vals) / len(right_vals))
-
-        half_range = max(abs(center_val - left_val), abs(right_val - center_val))
-        half_range = max(half_range, 100)
+        # Sort by score (highest first) and pick the best
+        candidates.sort(key=lambda c: c["score"], reverse=True)
+        best = candidates[0]
 
         return SteeringCalibrationResult(
-            offset=best_offset,
-            bits=best_bits,
-            center=center_val,
-            half_range=half_range,
+            offset=best["offset"],
+            bits=best["bits"],
+            center=best["center"],
+            half_range=best["half_range"],
             report_len=report_len,
         )
+
+    def _find_steering_candidates(self, report_len: int) -> list[dict]:
+        """Find all candidate steering axis configurations.
+
+        Returns:
+            List of candidate dicts with offset, bits, center, half_range, and score.
+        """
+        candidates = []
+
+        # Prioritize 8-bit and 16-bit (most common), then 32-bit as fallback
+        # Lower bit depths get a slight bonus in scoring
+        bit_priority = {8: 1.2, 16: 1.1, 32: 1.0}
+
+        for bits in [8, 16, 32]:
+            num_bytes = bits // 8
+            for offset in range(report_len - num_bytes + 1):
+                result = self._evaluate_candidate(offset, bits)
+                if result:
+                    # Apply bit depth priority bonus
+                    result["score"] *= bit_priority.get(bits, 1.0)
+                    candidates.append(result)
+
+        return candidates
+
+    def _evaluate_candidate(self, offset: int, bits: int) -> dict | None:
+        """Evaluate a single offset/bits combination as a steering candidate.
+
+        Returns:
+            Dict with offset, bits, center, half_range, score if valid, else None.
+        """
+        state = self._state
+
+        center_vals = [self._read_value(r, offset, bits) for r in state.center_reports]
+        left_vals = [self._read_value(r, offset, bits) for r in state.left_reports]
+        right_vals = [self._read_value(r, offset, bits) for r in state.right_reports]
+
+        # Filter out None values
+        center_vals = [v for v in center_vals if v is not None]
+        left_vals = [v for v in left_vals if v is not None]
+        right_vals = [v for v in right_vals if v is not None]
+
+        if not center_vals or not left_vals or not right_vals:
+            return None
+
+        # Calculate statistics
+        center_avg = sum(center_vals) / len(center_vals)
+        left_avg = sum(left_vals) / len(left_vals)
+        right_avg = sum(right_vals) / len(right_vals)
+
+        center_var = self._variance(center_vals)
+        left_var = self._variance(left_vals)
+        right_var = self._variance(right_vals)
+
+        # Total range between left and right
+        total_range = abs(right_avg - left_avg)
+
+        # Minimum range requirement (scales with bit depth)
+        min_range = {8: 30, 16: 500, 32: 5000}.get(bits, 50)
+        if total_range < min_range:
+            return None
+
+        # Center should be between left and right (with some margin)
+        min_pos = min(left_avg, right_avg)
+        max_pos = max(left_avg, right_avg)
+        margin = total_range * 0.35  # Allow 35% margin
+
+        if not (min_pos - margin <= center_avg <= max_pos + margin):
+            return None
+
+        # Center should be relatively stable (low variance)
+        # Steering held still should have low jitter
+        max_center_var = {8: 25, 16: 1000, 32: 100000}.get(bits, 100)
+        if center_var > max_center_var:
+            return None
+
+        # Left and right can have some variance (user might wobble at limits)
+        # But shouldn't have extreme variance
+        max_extreme_var = {8: 100, 16: 5000, 32: 500000}.get(bits, 500)
+        if left_var > max_extreme_var or right_var > max_extreme_var:
+            return None
+
+        # Calculate score based on multiple factors:
+        # 1. Range magnitude (larger is better, but normalized)
+        max_theoretical_range = {8: 255, 16: 65535, 32: 4294967295}.get(bits, 255)
+        range_score = (total_range / max_theoretical_range) * 100
+
+        # 2. Center stability (lower variance is better)
+        stability_score = max(0, 50 - (center_var / max(center_var, 1)))
+
+        # 3. Symmetry bonus (center closer to midpoint of left-right)
+        expected_center = (left_avg + right_avg) / 2
+        symmetry_error = abs(center_avg - expected_center) / max(total_range, 1)
+        symmetry_score = max(0, 30 * (1 - symmetry_error))
+
+        total_score = range_score + stability_score + symmetry_score
+
+        # Calculate half-range
+        half_range = max(abs(center_avg - left_avg), abs(right_avg - center_avg))
+        half_range = max(int(half_range), 100)  # Minimum 100
+
+        return {
+            "offset": offset,
+            "bits": bits,
+            "center": int(center_avg),
+            "half_range": half_range,
+            "score": total_score,
+        }
+
+    def _read_value(self, report: bytes, offset: int, bits: int) -> int | None:
+        """Read a value from a report at given offset with given bit depth."""
+        if bits == 32 and offset + 4 <= len(report):
+            raw = (report[offset] | (report[offset + 1] << 8) |
+                   (report[offset + 2] << 16) | (report[offset + 3] << 24))
+            return raw if raw < 0x80000000 else raw - 0x100000000
+        elif bits == 16 and offset + 2 <= len(report):
+            return report[offset] | (report[offset + 1] << 8)
+        elif bits == 8 and offset + 1 <= len(report):
+            return report[offset]
+        return None
+
+    @staticmethod
+    def _variance(values: list[int | float]) -> float:
+        """Calculate variance of a list of values."""
+        if len(values) < 2:
+            return 0.0
+        mean = sum(values) / len(values)
+        return sum((v - mean) ** 2 for v in values) / len(values)
 
     def _cancel(self) -> None:
         """Cancel calibration."""
@@ -457,6 +627,13 @@ class SteeringCalibrationWizard(QDialog):
         self._preview_timer.stop()
         self._on_status_update("Steering calibration canceled.")
         self.close()
+
+    def show(self) -> None:
+        """Show the wizard, offering preset if available."""
+        # If we have a preset, offer it before showing the full wizard
+        if self._preset and self._offer_preset():
+            return  # Preset was accepted, dialog already closed
+        super().show()
 
     def closeEvent(self, event) -> None:
         """Clean up on close."""

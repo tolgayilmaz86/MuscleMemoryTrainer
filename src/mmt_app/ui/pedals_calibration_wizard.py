@@ -2,6 +2,7 @@
 
 Provides a guided wizard to auto-detect pedals report length,
 throttle offset, and brake offset with improved accuracy.
+Supports known device presets for instant configuration.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from mmt_app.input.hid_backend import HidSession
 from mmt_app.input.calibration import MAX_READS_PER_TICK, CALIBRATION_DURATION_MS
+from mmt_app.input.device_presets import find_pedals_preset, PedalsPreset
 
 
 @dataclass
@@ -43,6 +46,8 @@ class PedalsCalibrationWizard(QDialog):
     1. Detecting report length
     2. Detecting throttle byte offset
     3. Detecting brake byte offset
+
+    Supports known device presets for instant configuration.
     """
 
     def __init__(
@@ -74,6 +79,10 @@ class PedalsCalibrationWizard(QDialog):
             "detect_throttle",
             "detect_brake",
         ]
+        self._preset: PedalsPreset | None = None
+
+        # Check for known device preset
+        self._check_for_preset()
 
         # Calibration state
         self._calibration_phase: str | None = None
@@ -84,6 +93,73 @@ class PedalsCalibrationWizard(QDialog):
         self._setup_timers()
         self._build_ui()
         self._run_current_step()
+
+    def _check_for_preset(self) -> None:
+        """Check if the connected pedals matches a known preset."""
+        if not self._pedals_session.is_open:
+            return
+
+        vendor_id = self._pedals_session.vendor_id
+        product_id = self._pedals_session.product_id
+
+        if vendor_id and product_id:
+            self._preset = find_pedals_preset(vendor_id, product_id)
+
+    def _offer_preset(self) -> bool:
+        """Offer to use a known preset if available.
+
+        Returns:
+            True if user accepted the preset and calibration is complete,
+            False if user wants manual calibration.
+        """
+        if not self._preset:
+            return False
+
+        reply = QMessageBox.question(
+            self,
+            "Known Pedals Detected",
+            f"Your pedals '{self._preset.name}' are recognized!\n\n"
+            f"Pre-configured settings:\n"
+            f"  • Throttle offset: {self._preset.throttle_offset}\n"
+            f"  • Brake offset: {self._preset.brake_offset}\n"
+            f"  • Report length: {self._preset.report_len}\n\n"
+            "Would you like to use these settings?\n"
+            "(Click 'No' to run manual calibration instead)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if reply == QMessageBox.Yes:
+            self._apply_preset()
+            return True
+        return False
+
+    def _apply_preset(self) -> None:
+        """Apply the detected preset and complete calibration."""
+        if not self._preset:
+            return
+
+        result = PedalsCalibrationResult(
+            report_len=self._preset.report_len,
+            throttle_offset=self._preset.throttle_offset,
+            brake_offset=self._preset.brake_offset,
+            throttle_score=1000.0,  # High confidence for preset
+            brake_score=1000.0,
+        )
+
+        self._on_complete(result)
+        self._on_status_update(
+            f"Using preset for {self._preset.name}: "
+            f"throttle={result.throttle_offset}, brake={result.brake_offset}"
+        )
+        self.close()
+
+    def show(self) -> None:
+        """Show the wizard, offering preset if available."""
+        # If we have a preset, offer it before showing the full wizard
+        if self._preset and self._offer_preset():
+            return  # Preset was accepted, dialog already closed
+        super().show()
 
     def _setup_timers(self) -> None:
         """Configure internal timers."""
@@ -276,10 +352,10 @@ class PedalsCalibrationWizard(QDialog):
             "Follow the instructions carefully for best results."
         )
         self._viz_frame.setVisible(True)
-        self._next_btn.setEnabled(False)
         self._next_btn.setText("Start Detection")
         self._next_btn.clicked.disconnect()
         self._next_btn.clicked.connect(self._start_axis_detection)
+        self._next_btn.setEnabled(True)  # Enable button for user to start
         self._on_status_update("Ready to detect throttle pedal...")
 
     def _run_brake_detection(self) -> None:
@@ -291,10 +367,10 @@ class PedalsCalibrationWizard(QDialog):
             "Follow the instructions carefully for best results."
         )
         self._viz_frame.setVisible(True)
-        self._next_btn.setEnabled(False)
         self._next_btn.setText("Start Detection")
         self._next_btn.clicked.disconnect()
         self._next_btn.clicked.connect(self._start_axis_detection)
+        self._next_btn.setEnabled(True)  # Enable button for user to start
         self._on_status_update("Ready to detect brake pedal...")
 
     def _start_axis_detection(self) -> None:
