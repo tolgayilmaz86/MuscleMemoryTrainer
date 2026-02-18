@@ -256,7 +256,7 @@ class DisplaySettingsGroup(QGroupBox):
         ))
 
         # Show steering checkbox
-        self._show_steering_checkbox = QCheckBox("Show steering trace")
+        self._show_steering_checkbox = QCheckBox("Show steering trace (beta)")
         self._show_steering_checkbox.setChecked(DEFAULT_SHOW_STEERING)
         self._show_steering_checkbox.stateChanged.connect(self._on_steering_visible_changed_internal)
         self._show_steering_checkbox.stateChanged.connect(self._on_settings_changed)
