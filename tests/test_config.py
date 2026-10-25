@@ -311,7 +311,7 @@ class TestDeviceConfig:
 
 
 class TestSettingsTabSaveButton:
-    """Tests for SettingsTab Save button creating config.ini."""
+    """Tests for SettingsTab persistence of config.ini and input bindings."""
 
     @pytest.fixture
     def qapp(self):
@@ -322,57 +322,40 @@ class TestSettingsTabSaveButton:
             app = QApplication([])
         yield app
 
-    def test_save_button_creates_config_file(self, tmp_path: Path, monkeypatch, qapp) -> None:
-        """Clicking Save in SettingsTab should create config.ini with settings."""
+    def test_settings_tab_creates_config_file(self, tmp_path: Path, monkeypatch, qapp) -> None:
+        """Opening the Settings tab should create config.ini with defaults."""
         from mmt_app.ui.settings_tab import SettingsTab
-        
-        cfg_path = tmp_path / "config.ini"
-        monkeypatch.setattr(config, "config_path", lambda: cfg_path)
-        
-        # Ensure no config exists initially
-        assert not cfg_path.exists()
-        
-        # Create settings tab
-        settings = SettingsTab()
-        
-        # Modify some settings
-        settings._throttle_offset.setValue(5)
-        settings._brake_offset.setValue(7)
-        settings._steering_range_slider.setValue(540)
-        
-        # Call save (simulates clicking Save button)
-        settings.save_current_mapping()
-        
-        # Verify config file was created
-        assert cfg_path.exists()
-        
-        # Verify content can be read back
-        content = cfg_path.read_text()
-        assert "[pedals]" in content and "[wheel]" in content and "[ui]" in content
 
-    def test_save_button_persists_calibration_values(self, tmp_path: Path, monkeypatch, qapp) -> None:
-        """Save button should persist calibration offset values to config.ini."""
-        from mmt_app.ui.settings_tab import SettingsTab
-        
         cfg_path = tmp_path / "config.ini"
         monkeypatch.setattr(config, "config_path", lambda: cfg_path)
-        
-        # Create settings tab and set specific calibration values
+        assert not cfg_path.exists()
+
+        SettingsTab()
+
+        assert cfg_path.exists()
+        assert "[ui]" in cfg_path.read_text()
+
+    def test_settings_tab_loads_saved_bindings(self, tmp_path: Path, monkeypatch, qapp) -> None:
+        """Bindings saved earlier are available after a restart."""
+        from mmt_app.input.bindings import AxisBinding, save_binding
+        from mmt_app.input.hid_descriptor import AxisField
+        from mmt_app.ui.settings_tab import SettingsTab
+
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        brake = AxisBinding(
+            vendor_id=0x346E,
+            product_id=0x0008,
+            product_string="mBooster Pedals",
+            field=AxisField(0x10, 32, 16, 0, 0xFFFF, 0x01, 0x35),
+            rest=120,
+            full=60000,
+        )
+        save_binding("brake", brake)
+
         settings = SettingsTab()
-        settings._pedals_report_len.setValue(16)
-        settings._throttle_offset.setValue(3)
-        settings._brake_offset.setValue(5)
-        settings._wheel_report_len.setValue(32)
-        settings._steering_offset.setValue(2)
-        settings._steering_range_slider.setValue(720)
-        
-        # Note: Without a device selected, save_current_mapping won't save pedals/wheel
-        # But _save_ui_settings will save UI settings
-        settings._save_ui_settings()
-        
-        # Verify UI settings were saved
-        loaded_ui = config.load_ui_config()
-        assert loaded_ui is not None
+
+        assert settings.inputs.binding("brake") == brake
+        assert settings.inputs.binding("throttle") is None
 
     def test_save_ui_settings_creates_config(self, tmp_path: Path, monkeypatch, qapp) -> None:
         """UI settings auto-save should create config.ini."""

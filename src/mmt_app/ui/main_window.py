@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import UiConfig, load_ui_config, save_ui_config
-from ..input.hid_backend import HidSession
 from ..telemetry import TelemetrySample
 from .about_tab import AboutTab
 from .active_brake_tab import ActiveBrakeTab
@@ -32,20 +31,18 @@ from .trail_brake_tab import TrailBrakeTab
 from .utils import (
     clamp,
     clamp_int,
-    scale_axis,
 )
 
 
 # Steering smoothing constants
 _STEERING_SMOOTHING_ALPHA = 0.15
-_STEERING_DEADBAND_PERCENT = 3.0
+_STEERING_DEADBAND_PERCENT = 0.25  # Input is decoded exactly now; only hide sensor noise
 _STEERING_SPIKE_THRESHOLD = 50.0  # Reject changes > 50% as noise/spikes
 
 # UI defaults
 _DEFAULT_UPDATE_RATE_HZ = 20
 _DEFAULT_MAX_CHART_POINTS = 200
 _UI_SAVE_DEBOUNCE_MS = 250
-_MAX_READS_PER_TICK = 50
 
 
 class MainWindow(QMainWindow):
@@ -75,10 +72,12 @@ class MainWindow(QMainWindow):
         self._connection_label = QLabel()
         self._connection_label.setObjectName("connectionLabel")
         self._connection_label.setTextFormat(Qt.RichText)
+        self._connection_label.linkActivated.connect(self._on_status_link)
         self._status_bar.addPermanentWidget(self._connection_label)
 
         self._max_points = _DEFAULT_MAX_CHART_POINTS
         self._sample_index = 0
+        self._offered_input_setup = False
         self._last_sample = TelemetrySample(throttle=0.0, brake=0.0, steering=0.0)
 
         self._init_ui_state()
@@ -123,6 +122,7 @@ class MainWindow(QMainWindow):
             on_update_rate_changed=self._on_settings_update_rate_changed,
             on_steering_visible_changed=self._on_settings_steering_visible_changed,
             on_watermark_visible_changed=self._on_settings_watermark_visible_changed,
+            on_inputs_changed=self._on_inputs_changed,
         )
 
         # Create telemetry tab
@@ -195,6 +195,20 @@ class MainWindow(QMainWindow):
         self._start_shortcut.setEnabled(enabled)
         self._reset_shortcut.setEnabled(enabled)
 
+    def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """On first show, offer the wheel & pedal setup if hardware is present but unbound."""
+        super().showEvent(event)
+        if self._offered_input_setup:
+            return
+        self._offered_input_setup = True
+        inputs = self._settings_tab.inputs
+        if not inputs.has_bindings() and inputs.hub.controllers:
+            QTimer.singleShot(300, self._offer_input_setup)
+
+    def _offer_input_setup(self) -> None:
+        self._tabs.setCurrentWidget(self._settings_tab)
+        self._settings_tab.open_input_setup()
+
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         """Ensure HID sessions are closed and settings saved before shutdown."""
         self._settings_tab.flush_pending_saves()
@@ -220,6 +234,16 @@ class MainWindow(QMainWindow):
         self._status_bar.showMessage(message, 5000)
         if hasattr(self, "_connection_label") and hasattr(self, "_settings_tab"):
             self._update_status()
+
+    def _on_inputs_changed(self) -> None:
+        """Bindings changed or a controller was (dis)connected."""
+        if hasattr(self, "_settings_tab"):
+            self._update_status()
+
+    def _on_status_link(self, link: str) -> None:
+        """Handle the "Set up" link in the status bar indicator."""
+        if link == "setup":
+            self._offer_input_setup()
 
     def _on_settings_targets_changed(self) -> None:
         """Handle throttle/brake target changes from SettingsTab."""
@@ -378,19 +402,23 @@ class MainWindow(QMainWindow):
 
     def _update_status(self) -> None:
         """Update the permanent status-bar indicator with the current input source."""
-        parts: list[str] = []
-        for name, session in (
-            ("Pedals", self._settings_tab.pedals_session),
-            ("Wheel", self._settings_tab.wheel_session),
-        ):
-            if session.is_open:
-                parts.append(f"{name}: {session.product_string or 'connected'}")
-        if parts:
-            text = "<span style='color:#22c55e'>●</span> " + "  |  ".join(parts)
-        else:
+        inputs = self._settings_tab.inputs
+        missing = inputs.missing_devices()
+        if not inputs.has_bindings():
             text = (
-                "<span style='color:#f59e0b'>●</span> Simulated input "
-                "— connect your pedals in Settings"
+                "<span style='color:#f59e0b'>●</span> Simulated input — "
+                "<a href='setup' style='color:#38bdf8'>set up your wheel &amp; pedals</a>"
+            )
+        elif missing:
+            text = (
+                f"<span style='color:#ef4444'>●</span> {', '.join(missing)} not connected"
+            )
+        else:
+            devices: dict[str, list[str]] = {}
+            for role, binding in inputs.bindings.items():
+                devices.setdefault(binding.product_string, []).append(role)
+            text = "<span style='color:#22c55e'>●</span> " + "  |  ".join(
+                f"{name} ({', '.join(roles)})" for name, roles in devices.items()
             )
         if text != self._connection_label.text():
             self._connection_label.setText(text)
@@ -424,73 +452,30 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------------------
 
     def _read_inputs(self) -> TelemetrySample:
-        """Poll pedals + wheel devices (if available); otherwise use simulated data."""
-        from mmt_app.input.hid_backend import hid_available
-        
-        pedals_session = self._settings_tab.pedals_session
-        wheel_session = self._settings_tab.wheel_session
-        
-        if hid_available() and (pedals_session.is_open or wheel_session.is_open):
-            throttle = self._last_sample.throttle
-            brake = self._last_sample.brake
-            steering = self._last_sample.steering
+        """Read the bound wheel/pedal axes; use simulated data until inputs are set up."""
+        inputs = self._settings_tab.inputs
+        if not inputs.has_bindings():
+            return self._generate_simulated_sample()
 
-            if pedals_session.is_open:
-                latest = self._read_device_report(
-                    pedals_session, report_len=self._settings_tab.pedals_report_len, name="Pedals"
-                )
-                if latest:
-                    t_off = self._settings_tab.throttle_offset
-                    b_off = self._settings_tab.brake_offset
-                    if max(t_off, b_off) < len(latest):
-                        throttle = scale_axis(latest[t_off]) * 100
-                        brake = scale_axis(latest[b_off]) * 100
-
-            if wheel_session.is_open:
-                latest = self._read_device_report(
-                    wheel_session, report_len=self._settings_tab.wheel_report_len, name="Wheel"
-                )
-                if latest:
-                    s_off = self._settings_tab.steering_offset
-                    bits = self._settings_tab.steering_bits
-                    if bits == 32:
-                        # 32-bit signed little-endian steering (4 bytes)
-                        if s_off + 3 < len(latest):
-                            raw = latest[s_off] | (latest[s_off + 1] << 8) | (latest[s_off + 2] << 16) | (latest[s_off + 3] << 24)
-                            # Convert to signed
-                            raw_steering = raw if raw < 0x80000000 else raw - 0x100000000
-                            steering_raw = self._apply_steering_32bit(raw_steering)
-                            steering = self._smooth_steering(steering_raw, self._last_sample.steering)
-                    elif bits == 16:
-                        # 16-bit little-endian steering (2 bytes)
-                        if s_off + 1 < len(latest):
-                            raw_steering = latest[s_off] | (latest[s_off + 1] << 8)
-                            steering_raw = self._apply_steering_16bit(raw_steering)
-                            steering = self._smooth_steering(steering_raw, self._last_sample.steering)
-                    else:
-                        # 8-bit steering (1 byte)
-                        if s_off < len(latest):
-                            steering_raw = self._apply_steering(latest[s_off])
-                            steering = self._smooth_steering(steering_raw, self._last_sample.steering)
-
-            self._last_sample = TelemetrySample(throttle, brake, steering)
-            return self._last_sample
-
-        return self._generate_simulated_sample()
-
-    def _read_device_report(
-        self, session: HidSession, *, report_len: int, name: str
-    ) -> list[int] | None:
-        """Read the latest report, closing the session if the device was unplugged."""
-        try:
-            return session.read_latest_report(report_len=report_len, max_reads=_MAX_READS_PER_TICK)
-        except (OSError, ValueError):
-            session.close()
+        unplugged = inputs.poll()
+        if unplugged:
             self._status_bar.showMessage(
-                f"{name} disconnected. Plug it back in and press Reconnect in Settings.", 10000
+                f"{', '.join(unplugged)} disconnected. It will reconnect automatically.", 10000
             )
             self._update_status()
-            return None
+
+        throttle = inputs.value("throttle")
+        brake = inputs.value("brake")
+        steering = inputs.value("steering")
+        self._last_sample = TelemetrySample(
+            throttle=throttle or 0.0,
+            brake=brake or 0.0,
+            steering=(
+                self._smooth_steering(steering, self._last_sample.steering)
+                if steering is not None else 0.0
+            ),
+        )
+        return self._last_sample
 
     def _generate_simulated_sample(self) -> TelemetrySample:
         """Generate simulated telemetry data for testing without hardware."""
@@ -502,63 +487,6 @@ class MainWindow(QMainWindow):
         steering = self._smooth_steering(steering_raw, self._last_sample.steering)
         self._last_sample = TelemetrySample(throttle=throttle, brake=brake, steering=steering)
         return self._last_sample
-
-    def _apply_steering(self, raw_value: int) -> float:
-        """Convert raw steering byte to -100..100 using calibrated center and range.
-        
-        The raw value is typically 0-255 from an 8-bit HID report.
-        We map it such that:
-        - center value = 0% steering
-        - values below center = negative (left)
-        - values above center = positive (right)
-        """
-        # For 8-bit, default center is 128 (middle of 0-255)
-        center = float(self._settings_tab.steering_center)
-        if center == 0 or center == 128:  # Use 8-bit default if not calibrated
-            center = 128.0
-        # Use calibrated half-range, or default to 127 for 8-bit
-        half_range = float(self._settings_tab.steering_half_range)
-        if half_range > 255:
-            # If half_range is from 16-bit calibration, scale down for 8-bit
-            half_range = 127.0
-        span = max(half_range, 1.0)  # Avoid division by zero
-        normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)
-        return normalized * 100.0
-
-    def _apply_steering_16bit(self, raw_value: int) -> float:
-        """Convert raw 16-bit steering value to -100..100 using calibrated center and range.
-        
-        The raw value is 0-65535 from a 16-bit HID report (little-endian).
-        We map it such that:
-        - center value = 0% steering
-        - values below center = negative (left)
-        - values above center = positive (right)
-        """
-        # For 16-bit, default center is 32768 (middle of 0-65535)
-        center = float(self._settings_tab.steering_center)
-        if center < 256:  # Center looks like 8-bit default, use 16-bit default instead
-            center = 32768.0
-        # Use calibrated half-range from steering calibration
-        span = max(float(self._settings_tab.steering_half_range), 1.0)  # Avoid division by zero
-        normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)
-        return normalized * 100.0
-
-    def _apply_steering_32bit(self, raw_value: int) -> float:
-        """Convert raw 32-bit signed steering value to -100..100 using calibrated center and range.
-        
-        The raw value is a signed 32-bit integer from the HID report (little-endian).
-        Common for direct drive wheels like VNM, Simucube, etc.
-        We map it such that:
-        - center value = 0% steering
-        - values below center = negative (left)
-        - values above center = positive (right)
-        """
-        # For 32-bit signed, center is typically 0
-        center = float(self._settings_tab.steering_center)
-        # Use calibrated half-range from steering calibration
-        span = max(float(self._settings_tab.steering_half_range), 1.0)  # Avoid division by zero
-        normalized = clamp((float(raw_value) - center) / span, -1.0, 1.0)
-        return normalized * 100.0
 
     def _smooth_steering(self, raw: float, prev: float) -> float:
         """Low-pass filter steering with spike rejection to avoid erratic traces.

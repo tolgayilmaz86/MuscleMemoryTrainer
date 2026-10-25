@@ -42,7 +42,7 @@ And more to come...
 ## Features
 
 - **Live Telemetry Chart**: Real-time visualization of throttle, brake, and steering inputs with target lines (steering can be toggled)
-- **HID Device Support**: Connect pedals and wheels via USB HID with auto-detection and calibration
+- **Wheel & Pedal Setup Like in Games**: Press each pedal and turn the wheel when asked; the app binds whatever moved and calibrates the pedal's travel. No device lists, byte offsets or bit depths
 - **Trail Brake Training**: Practice following brake traces with a score for every attempt; keep your own trace library (save, import, export, delete)
 - **Active Brake Training**: React to dynamically moving targets with adjustable speed and a live accuracy score
 - **Threshold Training**: Hit floating brake-pressure targets; tracks hits, misses and streaks
@@ -89,8 +89,8 @@ python -m mmt_app
 
 ## Usage
 
-1. **Connect Devices**: Go to the Settings tab and pick your pedals/wheel from the dropdown menus; they connect immediately. The status bar shows which devices are live, or *Simulated input* when none are.
-2. **Calibrate**: Use the calibration wizards to set axis ranges and offsets
+1. **Set up your wheel & pedals**: With your hardware plugged in, the app offers the setup on first launch (or use **Settings → Set up wheel & pedals…**). Press the throttle, press the brake as hard as you would under full braking, then turn the wheel. Each one is detected automatically when you let go.
+2. **Check it**: Settings shows a live bar per input. Use **Detect** to redo a single input. Unplugged devices reconnect automatically. The status bar shows which devices are live, or *Simulated input* when nothing is set up.
 3. **Select Training Mode**:
    - **Telemetry**: View live input visualization
    - **Trail Brake**: Follow a brake trace; each attempt is scored (last / best / average)
@@ -176,8 +176,10 @@ MuscleMemoryTrainer/
 │   ├── trail_brake.py        # Brake trace generation and scoring
 │   ├── input/                # HID device handling
 │   │   ├── __init__.py
-│   │   ├── hid_backend.py    # HID session management
-│   │   └── calibration.py    # Device calibration logic
+│   │   ├── hid_backend.py    # hidapi import / availability
+│   │   ├── hid_descriptor.py # Reads axis layouts from HID report descriptors
+│   │   ├── controllers.py    # Opens and polls game controllers
+│   │   └── bindings.py       # Press-to-bind detection, calibration, persistence
 │   ├── ui/                   # User interface components
 │   │   ├── __init__.py
 │   │   ├── main_window.py    # Main application window
@@ -225,8 +227,9 @@ The application follows **SOLID principles** with a clean separation of concerns
 - **telemetry.py**: Input data processing
 
 ### Input Layer (`input/`)
-- **HidSession**: Raw HID device communication
-- **calibration.py**: Axis calibration algorithms
+- **hid_descriptor.py**: Parses each controller's HID report descriptor to find its axes (report ID, bit offset, size, signedness, range), which is what games do instead of guessing byte offsets
+- **controllers.py**: `InputHub` opens every joystick/wheel/pedal interface and keeps the latest report per report ID
+- **bindings.py**: `AxisDetector` binds whichever axis moved; `AxisBinding` maps raw values to 0–100% using the released and fully pressed positions
 
 ### Design Patterns Used
 - **Callback Pattern**: Loose coupling between tabs and main window
@@ -247,8 +250,7 @@ Settings are persisted to `config.ini` in your user config directory:
 
 | Category | Settings |
 |----------|----------|
-| Devices | Vendor/product IDs, report lengths, byte offsets |
-| Calibration | Axis min/max values, center points |
+| Wheel & pedals | Per input: device VID/PID, axis location, released and full-travel values (`[binding.throttle]`, `[binding.brake]`, `[binding.steering]`) |
 | UI | Update rate, grid visibility, steering visibility, window size, last open tab |
 | Training | Target values, selected traces |
 | Audio | Custom sound file paths (empty = built-in beep), enable/disable flags |
@@ -269,7 +271,7 @@ pytest
 pytest -v
 
 # Run specific test file
-pytest tests/test_calibration.py
+pytest tests/test_input_bindings.py
 
 # Run with coverage (requires pytest-cov)
 pytest --cov=src/mmt_app --cov-report=html
@@ -331,7 +333,8 @@ Contributions are welcome! Please follow these guidelines:
 | **HID input not detected** | Ensure `hidapi` is installed (`pip install hidapi`). The app falls back to simulated input if unavailable. |
 | **Blank window in packaged build** | Verify `dist/MuscleMemoryTrainer/resources/` exists with styles, sounds, and icons. |
 | **Application won't start** | Check Python version (3.10+ required). Try `python -m mmt_app` for error messages. |
-| **Calibration issues** | Use the calibration wizard in Settings tab. Ensure device is connected before calibrating. |
+| **Wrong pedal/axis picked** | Click **Detect** next to that input in Settings and press only that pedal. A press must cover at least 25% of the axis travel. |
+| **Brake never reaches 100%** | Run **Detect** for the brake and press as hard as you would under full braking; that press becomes 100%. |
 | **No sound** | Check that sound files exist in resources and audio is enabled in Settings. |
 
 ### Debug Mode

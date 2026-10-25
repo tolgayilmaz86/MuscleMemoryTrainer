@@ -1,20 +1,18 @@
-"""Settings tab for device configuration, calibration, and sound settings.
+"""Settings tab for wheel/pedal setup, sound settings and display options.
 
 This module provides a centralized settings interface that composes
 specialized widgets following the Single Responsibility Principle.
 
 The SettingsTab acts as a facade, delegating to:
-- DeviceSelector: HID device selection and connection
-- CalibrationSettingsGroup: Calibration parameters and wizards
+- InputBindingsGroup: Which controller axis drives throttle, brake and steering
 - SoundSettingsGroup: Target sound configuration
 - DisplaySettingsGroup: Chart display options
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -24,51 +22,30 @@ from PySide6.QtWidgets import (
 )
 
 from mmt_app.config import (
-    InputProfile,
-    PedalsConfig,
-    WheelConfig,
     UiConfig,
-    load_input_profile,
+    ensure_config_exists,
     load_ui_config,
-    save_input_profile,
     save_ui_config,
-    DEFAULT_STEERING_CENTER,
-    DEFAULT_STEERING_RANGE,
-    DEFAULT_STEERING_HALF_RANGE,
 )
-from mmt_app.input.hid_backend import HidSession
-
-from mmt_app.ui.device_selector import DeviceSelector
-from mmt_app.ui.calibration_settings import CalibrationSettingsGroup
-from mmt_app.ui.sound_settings import SoundSettingsGroup
-from mmt_app.ui.sound_manager import SoundManager
+from mmt_app.input.bindings import ROLES, InputMapper, load_bindings
+from mmt_app.input.controllers import InputHub
 from mmt_app.ui.display_settings import DisplaySettingsGroup
-from mmt_app.ui.steering_calibration_wizard import (
-    SteeringCalibrationWizard,
-    SteeringCalibrationResult,
-)
-from mmt_app.ui.pedals_calibration_wizard import (
-    PedalsCalibrationWizard,
-    PedalsCalibrationResult,
-)
-
-if TYPE_CHECKING:
-    from mmt_app.telemetry import TelemetrySample
-
+from mmt_app.ui.input_setup import InputBindingsGroup
+from mmt_app.ui.sound_manager import SoundManager
+from mmt_app.ui.sound_settings import SoundSettingsGroup
 
 _UI_SAVE_DEBOUNCE_MS: int = 500
 """Debounce interval (ms) for persisting UI settings."""
 
 
 class SettingsTab(QWidget):
-    """Settings tab composing device, calibration, sound, and display widgets.
+    """Settings tab composing input, sound, and display widgets.
 
     This class acts as a facade, providing a unified interface while
     delegating to specialized components for each concern.
 
     Attributes:
-        pedals_session: HID session for the pedals device.
-        wheel_session: HID session for the wheel device.
+        inputs: Reads throttle/brake/steering from the bound controller axes.
     """
 
     def __init__(
@@ -81,6 +58,7 @@ class SettingsTab(QWidget):
         on_update_rate_changed: Callable[[int], None] | None = None,
         on_steering_visible_changed: Callable[[bool], None] | None = None,
         on_watermark_visible_changed: Callable[[bool], None] | None = None,
+        on_inputs_changed: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the settings tab.
 
@@ -92,6 +70,7 @@ class SettingsTab(QWidget):
             on_update_rate_changed: Callback when update rate changes.
             on_steering_visible_changed: Callback when steering visibility changes.
             on_watermark_visible_changed: Callback when watermark visibility changes.
+            on_inputs_changed: Callback when bindings change or controllers come and go.
         """
         super().__init__(parent)
 
@@ -99,27 +78,21 @@ class SettingsTab(QWidget):
         self._on_status_update = on_status_update or (lambda _: None)
         self._on_targets_changed = on_targets_changed or (lambda: None)
 
-        # Initialize steering state
-        self._steering_center: int = DEFAULT_STEERING_CENTER
-        self._steering_range: int = DEFAULT_STEERING_RANGE
-        self._steering_half_range: int = DEFAULT_STEERING_HALF_RANGE
+        # Controllers and bindings
+        ensure_config_exists()
+        self._hub = InputHub()
+        self._hub.refresh()
+        self._inputs = InputMapper(self._hub, load_bindings())
 
         # Create sound manager
         self._sound_manager = SoundManager()
 
         # Create UI components
-        self._device_selector = DeviceSelector(
+        self._input_bindings = InputBindingsGroup(
+            self._inputs,
             parent=self,
             on_status_update=self._set_status,
-            on_devices_connected=self._schedule_save_mapping,
-        )
-
-        self._calibration_settings = CalibrationSettingsGroup(
-            parent=self,
-            on_calibrate_pedals=self._start_pedals_calibration,
-            on_calibrate_steering=self._start_steering_calibration,
-            on_steering_range_changed=self._on_steering_range_changed,
-            on_advanced_changed=self._schedule_save_mapping,
+            on_bindings_changed=on_inputs_changed,
         )
 
         self._sound_settings = SoundSettingsGroup(
@@ -138,85 +111,23 @@ class SettingsTab(QWidget):
             on_settings_changed=self._schedule_save_ui_settings,
         )
 
-        # Setup save debounce timers
+        # Setup save debounce timer
         self._ui_save_timer = QTimer(self)
         self._ui_save_timer.setSingleShot(True)
         self._ui_save_timer.setInterval(_UI_SAVE_DEBOUNCE_MS)
         self._ui_save_timer.timeout.connect(self._save_ui_settings)
 
-        self._mapping_save_timer = QTimer(self)
-        self._mapping_save_timer.setSingleShot(True)
-        self._mapping_save_timer.setInterval(_UI_SAVE_DEBOUNCE_MS)
-        self._mapping_save_timer.timeout.connect(lambda: self.save_current_mapping(notify=False))
-
         # Build layout
         self._build_ui()
 
-        # Load persisted configuration
-        self._load_persisted_config()
-
     # -------------------------------------------------------------------------
-    # Public properties - HID sessions (delegated)
+    # Public properties - Inputs
     # -------------------------------------------------------------------------
 
     @property
-    def pedals_session(self) -> HidSession:
-        """Return the pedals HID session."""
-        return self._device_selector.pedals_session
-
-    @property
-    def wheel_session(self) -> HidSession:
-        """Return the wheel HID session."""
-        return self._device_selector.wheel_session
-
-    # -------------------------------------------------------------------------
-    # Public properties - Calibration (delegated)
-    # -------------------------------------------------------------------------
-
-    @property
-    def pedals_report_len(self) -> int:
-        """Return the configured pedals report length."""
-        return self._calibration_settings.pedals_report_len
-
-    @property
-    def wheel_report_len(self) -> int:
-        """Return the configured wheel report length."""
-        return self._calibration_settings.wheel_report_len
-
-    @property
-    def throttle_offset(self) -> int:
-        """Return the configured throttle byte offset."""
-        return self._calibration_settings.throttle_offset
-
-    @property
-    def brake_offset(self) -> int:
-        """Return the configured brake byte offset."""
-        return self._calibration_settings.brake_offset
-
-    @property
-    def steering_offset(self) -> int:
-        """Return the configured steering byte offset."""
-        return self._calibration_settings.steering_offset
-
-    @property
-    def steering_bits(self) -> int:
-        """Return the steering bit depth (8, 16, or 32)."""
-        return self._calibration_settings.steering_bits
-
-    @property
-    def steering_center(self) -> int:
-        """Return the calibrated steering center value."""
-        return self._steering_center
-
-    @property
-    def steering_range(self) -> int:
-        """Return the steering range (wheel rotation degrees)."""
-        return self._calibration_settings.steering_range
-
-    @property
-    def steering_half_range(self) -> int:
-        """Return the calibrated steering half-range."""
-        return self._steering_half_range
+    def inputs(self) -> InputMapper:
+        """Return the mapper that reads the bound wheel/pedal axes."""
+        return self._inputs
 
     # -------------------------------------------------------------------------
     # Public properties - Display (delegated)
@@ -253,26 +164,23 @@ class SettingsTab(QWidget):
         return self._display_settings.grid_step
 
     # -------------------------------------------------------------------------
-    # Public methods - Device management (delegated)
+    # Public methods - Inputs
     # -------------------------------------------------------------------------
 
-    def refresh_devices(self) -> None:
-        """Refresh the list of available HID devices."""
-        self._device_selector.refresh_devices()
+    def open_input_setup(self, roles: Sequence[str] = ROLES) -> None:
+        """Run the guided wheel & pedal setup."""
+        self._input_bindings.open_setup(roles)
 
-    def connect_devices(self) -> None:
-        """Open/close HID sessions based on current combo selections."""
-        self._device_selector.connect_devices()
+    def rescan_devices(self) -> None:
+        """Look for newly connected wheels and pedals."""
+        self._input_bindings.rescan()
 
     def close_sessions(self) -> None:
-        """Close all HID sessions (call on application exit)."""
-        self._device_selector.close_sessions()
+        """Close all controllers (call on application exit)."""
+        self._hub.close()
 
     def flush_pending_saves(self) -> None:
         """Write any debounced settings immediately (call on application exit)."""
-        if self._mapping_save_timer.isActive():
-            self._mapping_save_timer.stop()
-            self.save_current_mapping(notify=False)
         if self._ui_save_timer.isActive():
             self._ui_save_timer.stop()
             self._save_ui_settings()
@@ -350,13 +258,12 @@ class SettingsTab(QWidget):
         layout = QVBoxLayout(self)
 
         # Add component widgets
-        layout.addWidget(self._device_selector)
-        layout.addWidget(self._calibration_settings)
+        layout.addWidget(self._input_bindings)
         layout.addWidget(self._sound_settings)
         layout.addWidget(self._display_settings)
 
         # Status label
-        self._device_status = QLabel("Select devices above to start streaming.")
+        self._device_status = QLabel("")
         layout.addWidget(self._device_status)
 
         layout.addStretch()
@@ -369,98 +276,9 @@ class SettingsTab(QWidget):
     # Configuration persistence
     # -------------------------------------------------------------------------
 
-    def save_current_mapping(self, *, notify: bool = True) -> None:
-        """Persist the current device configuration to config.ini.
-
-        Args:
-            notify: Whether to report the save in the status line.
-        """
-        pedals_cfg = None
-        wheel_cfg = None
-
-        # Get pedals device info
-        pedals_dev = self._device_selector.pedals_device
-        if not pedals_dev:
-            pedals_dev = self._device_selector.get_selected_pedals_device()
-
-        if pedals_dev:
-            pedals_cfg = PedalsConfig(
-                vendor_id=pedals_dev.device_id.vendor_id,
-                product_id=pedals_dev.device_id.product_id,
-                product_string=pedals_dev.product_string,
-                report_len=self._calibration_settings.pedals_report_len,
-                throttle_offset=self._calibration_settings.throttle_offset,
-                brake_offset=self._calibration_settings.brake_offset,
-            )
-
-        # Get wheel device info
-        wheel_dev = self._device_selector.wheel_device
-        if not wheel_dev:
-            wheel_dev = self._device_selector.get_selected_wheel_device()
-
-        if wheel_dev:
-            wheel_cfg = WheelConfig(
-                vendor_id=wheel_dev.device_id.vendor_id,
-                product_id=wheel_dev.device_id.product_id,
-                product_string=wheel_dev.product_string,
-                report_len=self._calibration_settings.wheel_report_len,
-                steering_offset=self._calibration_settings.steering_offset,
-                steering_center=self._steering_center,
-                steering_range=self._calibration_settings.steering_range,
-                steering_half_range=self._steering_half_range,
-                steering_bits=self._calibration_settings.steering_bits,
-            )
-
-        save_input_profile(InputProfile(pedals=pedals_cfg, wheel=wheel_cfg, ui=None))
-        if notify:
-            self._set_status("Device configuration saved to config.ini.")
-
-    def _load_persisted_config(self) -> None:
-        """Load persisted device and UI configuration on startup."""
-        self._device_selector.refresh_devices()
-
-        try:
-            profile = load_input_profile()
-            self._apply_device_config(profile)
-        except Exception:
-            pass
-
-    def _apply_device_config(self, profile: InputProfile) -> None:
-        """Apply a loaded device configuration to UI controls."""
-        pedals_cfg = profile.pedals
-        wheel_cfg = profile.wheel
-
-        if pedals_cfg:
-            self._calibration_settings.set_pedals_report_len(pedals_cfg.report_len)
-            self._calibration_settings.set_throttle_offset(pedals_cfg.throttle_offset)
-            self._calibration_settings.set_brake_offset(pedals_cfg.brake_offset)
-            self._device_selector.select_device_by_vid_pid(
-                "pedals", pedals_cfg.vendor_id, pedals_cfg.product_id
-            )
-
-        if wheel_cfg:
-            self._calibration_settings.set_wheel_report_len(wheel_cfg.report_len)
-            self._calibration_settings.set_steering_offset(wheel_cfg.steering_offset)
-            self._calibration_settings.set_steering_bits(wheel_cfg.steering_bits)
-            self._steering_center = wheel_cfg.steering_center
-            self._steering_half_range = wheel_cfg.steering_half_range
-            self._calibration_settings.set_steering_range(wheel_cfg.steering_range)
-            self._steering_range = max(180, min(1080, wheel_cfg.steering_range))
-            self._device_selector.select_device_by_vid_pid(
-                "wheel", wheel_cfg.vendor_id, wheel_cfg.product_id
-            )
-
-        # Auto-connect if devices found
-        if pedals_cfg or wheel_cfg:
-            self._device_selector.connect_devices()
-
     def _schedule_save_ui_settings(self) -> None:
         """Debounce UI settings save to avoid excessive writes."""
         self._ui_save_timer.start(_UI_SAVE_DEBOUNCE_MS)
-
-    def _schedule_save_mapping(self) -> None:
-        """Debounce device mapping save (sliders and spin boxes fire per step)."""
-        self._mapping_save_timer.start(_UI_SAVE_DEBOUNCE_MS)
 
     def _save_ui_settings(self) -> None:
         """Persist UI-related settings.
@@ -485,73 +303,6 @@ class SettingsTab(QWidget):
         save_ui_config(cfg)
 
     # -------------------------------------------------------------------------
-    # Calibration wizards
-    # -------------------------------------------------------------------------
-
-    def _start_pedals_calibration(self) -> None:
-        """Start the pedals calibration wizard."""
-        if not self.pedals_session.is_open:
-            self._set_status("Pedals not connected. Select them under Device Selection first.")
-            return
-
-        wizard = PedalsCalibrationWizard(
-            parent=self,
-            pedals_session=self.pedals_session,
-            on_complete=self._on_pedals_calibration_complete,
-            on_status_update=self._set_status,
-        )
-        wizard.show()
-
-    def _on_pedals_calibration_complete(self, result: PedalsCalibrationResult) -> None:
-        """Handle pedals calibration completion."""
-        if result.report_len:
-            self._calibration_settings.set_pedals_report_len(result.report_len)
-        if result.throttle_offset is not None:
-            self._calibration_settings.set_throttle_offset(result.throttle_offset)
-        if result.brake_offset is not None:
-            self._calibration_settings.set_brake_offset(result.brake_offset)
-
-        try:
-            self.save_current_mapping(notify=False)
-            self._set_status(
-                f"Pedals calibrated: throttle={result.throttle_offset}, brake={result.brake_offset}"
-            )
-        except Exception:
-            pass
-
-    def _start_steering_calibration(self) -> None:
-        """Start the steering calibration wizard."""
-        if not self.wheel_session.is_open:
-            self._set_status("Wheel not connected. Select it under Device Selection first.")
-            return
-
-        wizard = SteeringCalibrationWizard(
-            parent=self,
-            wheel_session=self.wheel_session,
-            on_complete=self._on_steering_calibration_complete,
-            on_status_update=self._set_status,
-        )
-        wizard.show()
-
-    def _on_steering_calibration_complete(self, result: SteeringCalibrationResult) -> None:
-        """Handle steering calibration completion."""
-        self._calibration_settings.set_wheel_report_len(result.report_len)
-        self._calibration_settings.set_steering_offset(result.offset)
-        self._calibration_settings.set_steering_bits(result.bits)
-        self._steering_center = result.center
-        self._steering_half_range = result.half_range
-
-        try:
-            self.save_current_mapping(notify=False)
-        except Exception:
-            pass
-
-    def _on_steering_range_changed(self, value: int) -> None:
-        """Handle steering range slider changes."""
-        self._steering_range = value
-        self._schedule_save_mapping()
-
-    # -------------------------------------------------------------------------
     # Status helper
     # -------------------------------------------------------------------------
 
@@ -561,38 +312,8 @@ class SettingsTab(QWidget):
         self._on_status_update(message)
 
     # -------------------------------------------------------------------------
-    # Backward-compatible internal widget access (for tests)
+    # Internal widget access (for tests)
     # -------------------------------------------------------------------------
-
-    @property
-    def _pedals_report_len(self):
-        """Expose pedals report length spinbox for tests."""
-        return self._calibration_settings._pedals_report_len
-
-    @property
-    def _wheel_report_len(self):
-        """Expose wheel report length spinbox for tests."""
-        return self._calibration_settings._wheel_report_len
-
-    @property
-    def _throttle_offset(self):
-        """Expose throttle offset spinbox for tests."""
-        return self._calibration_settings._throttle_offset
-
-    @property
-    def _brake_offset(self):
-        """Expose brake offset spinbox for tests."""
-        return self._calibration_settings._brake_offset
-
-    @property
-    def _steering_offset(self):
-        """Expose steering offset spinbox for tests."""
-        return self._calibration_settings._steering_offset
-
-    @property
-    def _steering_range_slider(self):
-        """Expose steering range slider for tests."""
-        return self._calibration_settings._steering_range_slider
 
     @property
     def _throttle_target_slider(self):

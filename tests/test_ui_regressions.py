@@ -188,3 +188,66 @@ class TestDefaultSound:
         manager.set_path("throttle", custom)
         assert manager.custom_path("throttle") == str(custom)
         assert manager.get_path("throttle") == str(custom)
+
+
+# ============================================================================
+# Wheel & pedal setup
+# ============================================================================
+
+
+class TestInputSetupFlow:
+    """The guided 'press throttle, press brake, turn wheel' dialog."""
+
+    def test_full_setup_binds_each_role(self, qapp, tmp_config) -> None:
+        from test_input_bindings import RY, RZ, WHEEL_X, FakeController
+        from mmt_app.input.bindings import InputMapper, load_bindings
+        from mmt_app.input.controllers import InputHub
+        from mmt_app.ui.input_setup import AxisDetectDialog, InputBindingsGroup
+
+        pedals = FakeController("mBooster Pedals", 0x346E, 0x0008, [RY, RZ])
+        base = FakeController("VNM Direct Drive", 0x0483, 0xA3D5, [WHEEL_X])
+        devices = {c.info.path: c for c in (pedals, base)}
+        hub = InputHub(
+            enumerate_fn=lambda: [c.info for c in devices.values()],
+            controller_factory=lambda info: devices[info.path],
+        )
+        hub.refresh()
+        mapper = InputMapper(hub)
+        group = InputBindingsGroup(mapper)
+        group.open_setup()
+        dialog = group.findChild(AxisDetectDialog)
+        assert dialog is not None
+
+        def move(controller, field, path):
+            for raw in path:
+                controller.values[field] = raw
+                dialog._tick()
+
+        press = [0, 0, 0, 20000, 40000, 60000, 40000, 20000, 0, 0]
+        move(pedals, RY, press)          # Step 1: throttle
+        dialog._next_role()
+        move(pedals, RY, press)          # Step 2: pressing the throttle again is ignored...
+        assert "brake" not in dialog.results
+        move(pedals, RZ, press)          # ...the brake is what gets bound
+        dialog._next_role()
+        move(base, WHEEL_X, [0, -6000, -12000, -6000, 0, 6000, 12000, 6000, 0, 0])
+        dialog._next_role()              # Last step completes the dialog
+
+        assert mapper.binding("throttle").field == RY
+        assert mapper.binding("brake").field == RZ
+        assert mapper.binding("steering").field == WHEEL_X
+        assert set(load_bindings()) == {"throttle", "brake", "steering"}
+
+    def test_cancel_changes_nothing(self, qapp, tmp_config) -> None:
+        from mmt_app.input.bindings import InputMapper
+        from mmt_app.input.controllers import InputHub
+        from mmt_app.ui.input_setup import AxisDetectDialog, InputBindingsGroup
+
+        mapper = InputMapper(InputHub(enumerate_fn=lambda: []))
+        group = InputBindingsGroup(mapper)
+        group.open_setup(["brake"])
+        dialog = group.findChild(AxisDetectDialog)
+        dialog._tick()
+        assert dialog._detected_label.text() == "No wheel or pedals found"
+        dialog.reject()
+        assert not mapper.has_bindings()
