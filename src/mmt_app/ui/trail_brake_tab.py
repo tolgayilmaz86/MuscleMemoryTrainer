@@ -16,19 +16,23 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSlider,
+    QStyle,
     QVBoxLayout,
     QWidget,
 )
 
 from ..config import (
     TrailBrakeConfig,
+    load_custom_traces,
     load_trail_brake_config,
+    save_custom_traces,
     save_trail_brake_config,
 )
-from ..trail_brake import BrakeTrace, presets as preset_traces, random_trace
-from .utils import AXIS_MAX, clamp, clamp_int
+from ..trail_brake import BrakeTrace, presets as preset_traces, random_trace, trace_accuracy
+from .utils import AXIS_MAX, clamp_int
 from .watermark_chart_view import WatermarkChartView
 
 # Constants
@@ -38,6 +42,9 @@ MAX_TRACE_LENGTH = 500
 _TIMER_INTERVAL_MS = 20
 _BRAKE_MIN = 0.0
 _BRAKE_MAX = 100.0
+# Attempts shorter/lighter than this (a brake tap, pedal noise) are not scored.
+_MIN_SCORED_STEPS = 5
+_MIN_SCORED_PEAK = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,8 +64,8 @@ class TrailBrakeTab(QWidget):
     Features:
     - Fixed X axis (0..N-1) that does not scroll.
     - Target brake trace is displayed.
-    - User can record an attempt; brake input is overlaid.
-    - Custom traces and selection persist via config.ini.
+    - User can record an attempt; brake input is overlaid and scored.
+    - Custom traces persist in a JSON library; the selection persists via config.ini.
     - Import/export functionality for sharing traces.
     """
 
@@ -80,6 +87,7 @@ class TrailBrakeTab(QWidget):
     def _init_ui(self) -> None:
         """Initialize all UI components."""
         self._trace_combo = QComboBox()
+        self._trace_combo.currentIndexChanged.connect(self._on_trace_changed)
         self._status_label = QLabel("Select a trace or generate one, then press Start.")
 
         self._length_slider = QSlider(Qt.Horizontal)
@@ -89,32 +97,59 @@ class TrailBrakeTab(QWidget):
         self._length_slider.setSingleStep(1)
         self._length_slider.setPageStep(10)
         self._length_slider.setTickPosition(QSlider.TicksBelow)
+        self._length_slider.setToolTip("Number of steps in a random trace (only used for Random).")
         self._length_slider.valueChanged.connect(self._on_length_changed)
 
         self._length_label = QLabel(str(DEFAULT_TRACE_LENGTH))
         length_row = self._create_slider_row(self._length_slider, self._length_label)
 
         self._start_btn = QPushButton("Start auto")
+        self._start_btn.setToolTip(
+            "Arm auto-recording: pressing the brake starts an attempt and releasing\n"
+            "to 0% finishes it, then the next attempt is armed (Space)."
+        )
         self._start_btn.clicked.connect(self.toggle_recording)
         self._reset_btn = QPushButton("Reset attempt")
+        self._reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self._reset_btn.setToolTip("Clear the current attempt and stop auto-recording (R)")
         self._reset_btn.clicked.connect(self.reset_attempt)
         self._regen_btn = QPushButton("Regenerate target")
-        self._regen_btn.clicked.connect(self._regenerate_random_trace)
+        self._regen_btn.setToolTip("Generate a new random target trace")
+        self._regen_btn.clicked.connect(lambda: self._regenerate_random_trace())
         self._auto_regen_checkbox = QCheckBox("Auto Generate")
+        self._auto_regen_checkbox.setToolTip("Generate a new random trace after every attempt")
         self._auto_regen_checkbox.setChecked(True)
-        self._save_btn = QPushButton("Save trace")
+        self._save_btn = QPushButton("Save\u2026")
+        self._save_btn.setToolTip("Save the current target trace to your trace library")
         self._save_btn.clicked.connect(self.save_trace_as)
-        self._import_btn = QPushButton("Import trace")
+        self._delete_btn = QPushButton("Delete")
+        self._delete_btn.setToolTip("Delete the selected custom trace from your library")
+        self._delete_btn.clicked.connect(self.delete_trace)
+        self._import_btn = QPushButton("Import\u2026")
+        self._import_btn.setToolTip("Add a trace from a JSON file to your library")
         self._import_btn.clicked.connect(self.import_trace)
-        self._export_btn = QPushButton("Export trace")
+        self._export_btn = QPushButton("Export\u2026")
+        self._export_btn.setToolTip("Export the current target trace to a JSON file")
         self._export_btn.clicked.connect(self.export_trace)
+
+        self._score_label = QLabel()
+        self._score_label.setObjectName("scoreLabel")
+        self._score_label.setToolTip(
+            "Score = 100 minus your average difference from the target trace\n"
+            "(in % points; idle time at 0% is ignored)."
+        )
 
         self._chart, self._series_target, self._series_user, self._axis_x, self._axis_y = self._create_chart()
         self._chart_view = WatermarkChartView(self._chart)
         self._watermark_visible = True  # Track watermark visibility
 
+        trace_row = QHBoxLayout()
+        trace_row.addWidget(self._trace_combo, stretch=1)
+        for btn in (self._save_btn, self._delete_btn, self._import_btn, self._export_btn):
+            trace_row.addWidget(btn)
+
         form = QFormLayout()
-        form.addRow("Brake trace", self._trace_combo)
+        form.addRow("Brake trace", trace_row)
         form.addRow("Trace length", length_row)
 
         buttons = QHBoxLayout()
@@ -123,9 +158,7 @@ class TrailBrakeTab(QWidget):
         buttons.addWidget(self._regen_btn)
         buttons.addWidget(self._auto_regen_checkbox)
         buttons.addStretch()
-        buttons.addWidget(self._save_btn)
-        buttons.addWidget(self._import_btn)
-        buttons.addWidget(self._export_btn)
+        buttons.addWidget(self._score_label)
 
         layout = QVBoxLayout()
         layout.addLayout(form)
@@ -137,9 +170,10 @@ class TrailBrakeTab(QWidget):
     def _init_state(self) -> None:
         """Initialize internal state and load persisted configuration."""
         self._presets = preset_traces()
-        self._custom: dict[str, list[int]] = {}
+        self._custom: dict[str, list[int]] = load_custom_traces()
         self._generated_trace: Optional[BrakeTrace] = None
         self._loop_active = False
+        self._scores: list[float] = []
 
         self._populate_traces()
         self._load_selection()
@@ -156,6 +190,8 @@ class TrailBrakeTab(QWidget):
         self._render_target()
         self._render_user()
         self._set_start_button_text()
+        self._sync_trace_controls()
+        self._update_score_label()
         self._set_watermark_percent(0)
         self._chart_view.set_watermark_visible(self._watermark_visible)
 
@@ -205,11 +241,6 @@ class TrailBrakeTab(QWidget):
 
     def _populate_traces(self) -> None:
         """Populate the trace combo box with presets and custom traces."""
-        try:
-            self._trace_combo.currentIndexChanged.disconnect(self._on_trace_changed)
-        except Exception:
-            pass
-
         current = self._trace_combo.currentData()
         self._trace_combo.blockSignals(True)
         self._trace_combo.clear()
@@ -226,8 +257,25 @@ class TrailBrakeTab(QWidget):
                     self._trace_combo.setCurrentIndex(i)
                     break
 
-        self._trace_combo.currentIndexChanged.connect(self._on_trace_changed)
         self._trace_combo.blockSignals(False)
+
+    def _select_trace(self, kind: str, name: str) -> None:
+        """Select (and load) the trace with the given kind and name."""
+        for i in range(self._trace_combo.count()):
+            data = self._trace_combo.itemData(i)
+            if data and tuple(data) == (kind, name):
+                if i == self._trace_combo.currentIndex():
+                    self._on_trace_changed()
+                else:
+                    self._trace_combo.setCurrentIndex(i)
+                return
+
+    def _sync_trace_controls(self) -> None:
+        """Enable only the controls that apply to the selected kind of trace."""
+        data = self._trace_combo.currentData()
+        kind = data[0] if data else ""
+        self._length_slider.setEnabled(kind == "random")
+        self._delete_btn.setEnabled(kind == "custom")
 
     def _load_selection(self) -> None:
         """Load the previously selected trace from configuration."""
@@ -372,6 +420,11 @@ class TrailBrakeTab(QWidget):
     def _finish_attempt(self, message: str, *, regen: bool) -> None:
         """Complete the current attempt and optionally regenerate trace."""
         self._timer.stop()
+        if self._attempt_too_short():
+            message = f"{message} Too short to score; try the same target again."
+            regen = False
+        else:
+            message = f"{message} {self._record_score()}"
         if regen and self._auto_regen_checkbox.isChecked() and self._is_random_selected():
             self._regenerate_random_trace(
                 status_text=f"{message} New random target ready.",
@@ -391,6 +444,33 @@ class TrailBrakeTab(QWidget):
             self._set_start_button_text()
             self._status_label.setText(message)
 
+    def _attempt_too_short(self) -> bool:
+        """Return True for accidental taps that shouldn't count as an attempt."""
+        recorded = self._state.user_points[1:self._state.cursor]
+        min_steps = max(_MIN_SCORED_STEPS, len(self._state.trace.points) // 10)
+        return len(recorded) < min_steps or max(recorded, default=0) < _MIN_SCORED_PEAK
+
+    def _record_score(self) -> str:
+        """Score the finished attempt against the target and return a status snippet."""
+        score = trace_accuracy(self._state.trace.points, self._state.user_points)
+        self._scores.append(score)
+        self._update_score_label()
+        return f"Score: {score:.0f}%."
+
+    def _update_score_label(self) -> None:
+        """Show the last, best and average attempt scores for this session."""
+        if not self._scores:
+            self._score_label.setText("Score: --")
+            return
+        last = self._scores[-1]
+        best = max(self._scores)
+        avg = sum(self._scores) / len(self._scores)
+        runs = len(self._scores)
+        self._score_label.setText(
+            f"Last: {last:.0f}%  \u00b7  Best: {best:.0f}%  \u00b7  "
+            f"Avg: {avg:.0f}% ({runs} run{'s' if runs != 1 else ''})"
+        )
+
     def _read_brake_value(self) -> int:
         """Read and clamp the current brake percentage value."""
         return clamp_int(int(round(float(self._read_brake_percent()))), 0, AXIS_MAX)
@@ -399,10 +479,11 @@ class TrailBrakeTab(QWidget):
         self._ensure_random_selected()
         length = self._random_length()
         self._generated_trace = random_trace(length)
-        self._apply_trace(self._generated_trace, status_text=status_text or "Random target regenerated.")
+        status_text = status_text or "Random target regenerated."
+        self._apply_trace(self._generated_trace, status_text=status_text)
         self._save_selection()
         if auto_restart and self._loop_active:
-            self._begin_attempt(status="Random target regenerated. Auto-recording armed.")
+            self._begin_attempt(status=f"{status_text} Auto-recording armed.")
 
     def _apply_trace(self, trace: BrakeTrace, *, status_text: Optional[str] = None) -> None:
         """Apply a trace to the chart and reset state."""
@@ -420,6 +501,7 @@ class TrailBrakeTab(QWidget):
         self._render_target()
         self._render_user()
         self._set_start_button_text()
+        self._sync_trace_controls()
         self._set_watermark_percent(0)
         if status_text:
             self._status_label.setText(status_text)
@@ -456,25 +538,51 @@ class TrailBrakeTab(QWidget):
                 break
 
     def save_trace_as(self) -> None:
-        """Save the currently displayed target trace to a JSON file."""
+        """Save the currently displayed target trace to the custom trace library."""
         trace = self._state.trace
-        default_name = f"{trace.name}.json"
-        path_str, _ = QFileDialog.getSaveFileName(
-            self, "Save brake trace", default_name, "JSON (*.json)"
+        default_name = "" if self._is_random_selected() else trace.name
+        name, ok = QInputDialog.getText(
+            self, "Save trace", "Name for this trace:", text=default_name
         )
-        if not path_str:
+        name = name.strip()
+        if not ok or not name:
             return
-        path = Path(path_str)
+        if name in self._custom:
+            reply = QMessageBox.question(
+                self, "Replace trace", f"A custom trace named '{name}' exists. Replace it?"
+            )
+            if reply != QMessageBox.Yes:
+                return
+        self._custom[name] = list(trace.points)
+        if not self._persist_custom_traces():
+            return
+        self._populate_traces()
+        self._select_trace("custom", name)
+        self._status_label.setText(f"Saved trace '{name}' to your library.")
+
+    def delete_trace(self) -> None:
+        """Delete the selected custom trace from the library."""
+        data = self._trace_combo.currentData()
+        if not data or data[0] != "custom":
+            return
+        name = str(data[1])
+        reply = QMessageBox.question(self, "Delete trace", f"Delete custom trace '{name}'?")
+        if reply != QMessageBox.Yes:
+            return
+        self._custom.pop(name, None)
+        self._persist_custom_traces()
+        self._populate_traces()
+        self._select_trace("random", "Random target")
+        self._status_label.setText(f"Deleted trace '{name}'.")
+
+    def _persist_custom_traces(self) -> bool:
+        """Write the custom trace library to disk, reporting failures."""
         try:
-            # Save the displayed target trace to JSON file
-            payload = {
-                "name": trace.name,
-                "points": list(trace.points),
-            }
-            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            self._status_label.setText(f"Saved trace to {path.name}.")
-        except Exception as exc:
-            self._status_label.setText(f"Save failed: {exc}")
+            save_custom_traces(self._custom)
+        except OSError as exc:
+            self._status_label.setText(f"Could not save trace library: {exc}")
+            return False
+        return True
 
     def import_trace(self) -> None:
         """Import a brake trace from a JSON file."""
@@ -488,12 +596,16 @@ class TrailBrakeTab(QWidget):
                 raise ValueError("Expected JSON object with keys: name, points")
             name = str(raw["name"]).strip()
             points = raw["points"]
-            if not isinstance(points, list):
-                raise ValueError("points must be a list")
+            if not name:
+                raise ValueError("name must not be empty")
+            if not isinstance(points, list) or not points:
+                raise ValueError("points must be a non-empty list")
             normalized = [max(0, min(100, int(x))) for x in points]
             self._custom[name] = normalized
+            self._persist_custom_traces()
             self._populate_traces()
-            self._status_label.setText(f"Imported trace '{name}'.")
+            self._select_trace("custom", name)
+            self._status_label.setText(f"Imported trace '{name}' into your library.")
         except Exception as exc:
             self._status_label.setText(f"Import failed: {exc}")
 
@@ -522,7 +634,7 @@ class TrailBrakeTab(QWidget):
 
     def _on_length_changed(self, value: int) -> None:
         """Handle length slider value change."""
-        self._length_value_label.setText(str(int(value)))
+        self._length_label.setText(str(int(value)))
         self._rebuild_default_trace_if_needed()
 
     def _begin_attempt(self, status: Optional[str] = None) -> None:
@@ -565,8 +677,16 @@ class TrailBrakeTab(QWidget):
         """Update the start button text based on loop state."""
         if self._loop_active:
             self._start_btn.setText("Stop auto")
+            self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
         else:
             self._start_btn.setText("Start auto")
+            self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """Stop auto-recording when the tab is left."""
+        if self._loop_active:
+            self.toggle_recording()
+        super().hideEvent(event)
 
     def _set_watermark_percent(self, value: int) -> None:
         """Update the watermark display with the current brake percentage."""

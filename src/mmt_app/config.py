@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import configparser
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -57,6 +57,7 @@ class UiConfig:
     brake_sound_path: str | None = None
     window_width: int = 1080
     window_height: int = 600
+    last_tab: int = 0
 
 
 @dataclass(frozen=True)
@@ -166,6 +167,7 @@ def ensure_config_exists() -> None:
         "brake_sound_path": "",
         "window_width": str(DEFAULT_WINDOW_WIDTH),
         "window_height": str(DEFAULT_WINDOW_HEIGHT),
+        "last_tab": "0",
     }
 
     # Trail Brake section
@@ -347,6 +349,7 @@ def load_ui_config() -> Optional[UiConfig]:
             brake_sound_path=section.get("brake_sound_path", fallback="").strip() or None,
             window_width=int(section.get("window_width", "1080")),
             window_height=int(section.get("window_height", "600")),
+            last_tab=int(section.get("last_tab", "0")),
         )
     except Exception:
         return None
@@ -368,6 +371,7 @@ def save_ui_config(cfg: UiConfig) -> None:
         "brake_sound_path": cfg.brake_sound_path or "",
         "window_width": str(int(cfg.window_width)),
         "window_height": str(int(cfg.window_height)),
+        "last_tab": str(int(cfg.last_tab)),
     }
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
@@ -396,6 +400,39 @@ def save_trail_brake_config(cfg: TrailBrakeConfig) -> None:
     path = config_path()
     with path.open("w", encoding="utf-8") as f:
         parser.write(f)
+
+
+def custom_traces_path() -> Path:
+    """Return the JSON file holding the user's saved brake traces."""
+    return config_path().parent / "custom_traces.json"
+
+
+def load_custom_traces() -> dict[str, list[int]]:
+    """Load saved custom brake traces, skipping malformed entries."""
+    path = custom_traces_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    traces: dict[str, list[int]] = {}
+    for name, points in raw.items():
+        if not isinstance(points, list) or not points:
+            continue
+        try:
+            traces[str(name)] = [max(0, min(100, int(p))) for p in points]
+        except (TypeError, ValueError):
+            continue
+    return traces
+
+
+def save_custom_traces(traces: dict[str, list[int]]) -> None:
+    """Persist custom brake traces (name -> points) as JSON."""
+    path = custom_traces_path()
+    path.write_text(json.dumps(traces, indent=2), encoding="utf-8")
 
 
 def load_active_brake_config() -> ActiveBrakeConfig:

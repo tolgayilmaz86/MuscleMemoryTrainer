@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
+from PySide6.QtCharts import QChart, QLineSeries, QValueAxis
 from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QPainter, QPen, QColor
 
@@ -32,17 +32,26 @@ class TelemetryChart:
 
     def _init_series(self) -> None:
         """Initialize all chart series."""
-        self._series_throttle = QLineSeries(name="Throttle %")
-        self._series_brake = QLineSeries(name="Brake %")
-        self._series_steering = QLineSeries(name="Steering (0=center)")
-        self._series_steering_zero = QLineSeries(name="Steering 0")
-        self._series_target_throttle = QLineSeries(name="Throttle Target")
-        self._series_target_brake = QLineSeries(name="Brake Target")
+        self._series_throttle = QLineSeries()
+        self._series_throttle.setName("Throttle %")
+        self._series_brake = QLineSeries()
+        self._series_brake.setName("Brake %")
+        self._series_steering = QLineSeries()
+        self._series_steering.setName("Steering (0=center)")
+        self._series_steering_zero = QLineSeries()
+        self._series_steering_zero.setName("Steering 0")
+        self._series_target_throttle = QLineSeries()
+        self._series_target_throttle.setName("Throttle Target")
+        self._series_target_brake = QLineSeries()
+        self._series_target_brake.setName("Brake Target")
 
         self._series_throttle.setPen(QPen(QColor("#22c55e"), 2))  # green
         self._series_brake.setPen(QPen(QColor("#ef4444"), 2))  # red
         self._series_steering.setPen(QPen(QColor("#f97316"), 2))  # orange
         self._series_steering_zero.setPen(QPen(QColor("#94a3b8"), 1, Qt.DashLine))
+        # Target lines match their input colour but are dashed so they read as goals.
+        self._series_target_throttle.setPen(QPen(QColor("#22c55e"), 1.5, Qt.DashLine))
+        self._series_target_brake.setPen(QPen(QColor("#ef4444"), 1.5, Qt.DashLine))
 
     def _init_chart(self) -> None:
         """Initialize the chart and axes."""

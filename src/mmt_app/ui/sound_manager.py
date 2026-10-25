@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QUrl
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
-from mmt_app.embedded_sound import get_embedded_sound_path
+from mmt_app.embedded_sound import get_embedded_sound_path, is_builtin_sound_path
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -66,14 +66,25 @@ class SoundManager:
         """
         return self._sound_enabled.get(kind, True)
 
-    def set_path(self, kind: str, path: str | Path) -> None:
+    def set_path(self, kind: str, path: str | Path | None) -> None:
         """Set the sound file path for a given type.
 
         Args:
             kind: Sound type identifier.
-            path: Path to the sound file.
+            path: Path to the sound file, or None to use the default sound.
         """
+        if is_builtin_sound_path(path):
+            self._sound_paths.pop(kind, None)
+            return
         self._sound_paths[kind] = str(Path(path).expanduser())
+
+    def custom_path(self, kind: str) -> str | None:
+        """Return the user-selected sound file, or None when using the default.
+
+        Args:
+            kind: Sound type identifier.
+        """
+        return self._sound_paths.get(kind) or None
 
     def get_path(self, kind: str) -> str:
         """Get the configured sound path, falling back to default.
@@ -113,7 +124,14 @@ class SoundManager:
         """
         if not self.is_enabled(kind):
             return
+        self.preview(kind)
 
+    def preview(self, kind: str) -> None:
+        """Play the sound for a given type even if it is disabled.
+
+        Args:
+            kind: Sound type identifier.
+        """
         path = self.resolve_path(kind)
 
         if not path.exists() or path.suffix.lower() not in self.VALID_EXTENSIONS:
@@ -145,18 +163,18 @@ class SoundManager:
         """
         self.set_enabled("throttle", throttle_enabled)
         self.set_enabled("brake", brake_enabled)
-        self.set_path("throttle", throttle_path or str(self._default_sound_path))
-        self.set_path("brake", brake_path or str(self._default_sound_path))
+        self.set_path("throttle", throttle_path)
+        self.set_path("brake", brake_path)
 
-    def get_settings(self) -> dict[str, bool | str]:
+    def get_settings(self) -> dict[str, bool | str | None]:
         """Get current sound settings for persistence.
 
         Returns:
-            Dictionary with enabled states and paths for each sound type.
+            Dictionary with enabled states and custom paths (None = default sound).
         """
         return {
             "throttle_sound_enabled": self.is_enabled("throttle"),
-            "throttle_sound_path": self.get_path("throttle"),
+            "throttle_sound_path": self.custom_path("throttle"),
             "brake_sound_enabled": self.is_enabled("brake"),
-            "brake_sound_path": self.get_path("brake"),
+            "brake_sound_path": self.custom_path("brake"),
         }

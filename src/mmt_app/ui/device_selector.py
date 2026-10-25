@@ -39,16 +39,19 @@ class DeviceSelector(QGroupBox):
         parent: QWidget | None = None,
         *,
         on_status_update: Callable[[str], None] | None = None,
+        on_devices_connected: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the device selector.
 
         Args:
             parent: Parent widget.
             on_status_update: Callback invoked with status messages.
+            on_devices_connected: Callback invoked after sessions are (re)opened.
         """
         super().__init__("Device Selection", parent)
 
         self._on_status_update = on_status_update or (lambda _: None)
+        self._on_devices_connected = on_devices_connected or (lambda: None)
 
         # HID device sessions and state
         self._devices: list[HidDeviceInfo] = []
@@ -99,11 +102,15 @@ class DeviceSelector(QGroupBox):
         # Pedals device combo
         self._pedals_combo = QComboBox()
         self._pedals_combo.setMinimumWidth(280)
+        self._pedals_combo.setToolTip("Selecting a device connects to it immediately.")
+        self._pedals_combo.activated.connect(lambda _: self.connect_devices())
         form.addRow("Pedals HID:", self._pedals_combo)
 
         # Wheel device combo
         self._wheel_combo = QComboBox()
         self._wheel_combo.setMinimumWidth(280)
+        self._wheel_combo.setToolTip("Selecting a device connects to it immediately.")
+        self._wheel_combo.activated.connect(lambda _: self.connect_devices())
         form.addRow("Wheel HID:", self._wheel_combo)
 
         # Button row: Refresh and Connect
@@ -112,10 +119,12 @@ class DeviceSelector(QGroupBox):
         btn_layout.setContentsMargins(0, 0, 0, 0)
 
         refresh_btn = QPushButton("Refresh")
+        refresh_btn.setToolTip("Rescan USB devices (keeps the current selection).")
         refresh_btn.clicked.connect(self.refresh_devices)
         btn_layout.addWidget(refresh_btn)
 
-        connect_btn = QPushButton("Connect")
+        connect_btn = QPushButton("Reconnect")
+        connect_btn.setToolTip("Reopen the selected devices, e.g. after unplugging them.")
         connect_btn.clicked.connect(self.connect_devices)
         btn_layout.addWidget(connect_btn)
 
@@ -133,9 +142,18 @@ class DeviceSelector(QGroupBox):
             self._set_status("hidapi not available. Install hidapi to enable device selection.")
             return
 
+        # Remember the current choices so a rescan does not silently deselect them.
+        previous = [
+            (self._pedals_combo, self.get_selected_pedals_device() or self._pedals_device),
+            (self._wheel_combo, self.get_selected_wheel_device() or self._wheel_device),
+        ]
         self._devices = enumerate_devices()
-        self._populate_combo(self._pedals_combo, "(none)")
-        self._populate_combo(self._wheel_combo, "(none)")
+        for combo, device in previous:
+            self._populate_combo(combo, "(none)")
+            if device is not None:
+                self._select_matching(
+                    combo, device.device_id.vendor_id, device.device_id.product_id, path=device.path
+                )
         self._set_status(f"Found {len(self._devices)} HID device(s).")
 
     def _populate_combo(self, combo: QComboBox, placeholder: str) -> None:
@@ -156,15 +174,19 @@ class DeviceSelector(QGroupBox):
         self._pedals_device = None
         self._wheel_device = None
 
+        connected: list[str] = []
+        errors: list[str] = []
+
         # Open pedals session
         pedals_idx = self._pedals_combo.currentData()
         if pedals_idx is not None and pedals_idx < len(self._devices):
             try:
                 self._pedals_device = self._devices[pedals_idx]
-                self._pedals_session.open(self._pedals_device)
-                self._set_status(f"Pedals connected: {self._pedals_combo.currentText()}")
+                if self._pedals_device is not None:
+                    self._pedals_session.open(self._pedals_device)
+                    connected.append(f"pedals ({self._pedals_device.product_string})")
             except Exception as e:
-                self._set_status(f"Failed to open pedals: {e}")
+                errors.append(f"pedals: {e}")
                 self._pedals_device = None
 
         # Open wheel session
@@ -172,14 +194,20 @@ class DeviceSelector(QGroupBox):
         if wheel_idx is not None and wheel_idx < len(self._devices):
             try:
                 self._wheel_device = self._devices[wheel_idx]
-                self._wheel_session.open(self._wheel_device)
-                self._set_status(f"Wheel connected: {self._wheel_combo.currentText()}")
+                if self._wheel_device is not None:
+                    self._wheel_session.open(self._wheel_device)
+                    connected.append(f"wheel ({self._wheel_device.product_string})")
             except Exception as e:
-                self._set_status(f"Failed to open wheel: {e}")
+                errors.append(f"wheel: {e}")
                 self._wheel_device = None
 
-        if pedals_idx is None and wheel_idx is None:
+        if errors:
+            self._set_status("Failed to open " + "; ".join(errors))
+        elif connected:
+            self._set_status("Connected " + " and ".join(connected) + ".")
+        else:
             self._set_status("No devices selected. Running in simulator mode.")
+        self._on_devices_connected()
 
     def select_device_by_vid_pid(
         self, device_type: str, vid: int, pid: int
@@ -195,14 +223,26 @@ class DeviceSelector(QGroupBox):
             return
 
         combo = self._pedals_combo if device_type == "pedals" else self._wheel_combo
+        self._select_matching(combo, vid, pid)
 
+    def _select_matching(
+        self, combo: QComboBox, vid: int, pid: int, *, path: object = None
+    ) -> None:
+        """Select the combo entry matching `path` (preferred) or VID/PID."""
+        fallback: int | None = None
         for i in range(combo.count()):
             idx = combo.itemData(i)
-            if idx is not None and idx < len(self._devices):
-                dev = self._devices[idx]
-                if dev.device_id.vendor_id == vid and dev.device_id.product_id == pid:
-                    combo.setCurrentIndex(i)
-                    return
+            if idx is None or idx >= len(self._devices):
+                continue
+            dev = self._devices[idx]
+            if path is not None and dev.path == path:
+                combo.setCurrentIndex(i)
+                return
+            ids = (dev.device_id.vendor_id, dev.device_id.product_id)
+            if fallback is None and ids == (vid, pid):
+                fallback = i
+        if fallback is not None:
+            combo.setCurrentIndex(fallback)
 
     def get_selected_pedals_device(self) -> HidDeviceInfo | None:
         """Get the currently selected pedals device from combo."""

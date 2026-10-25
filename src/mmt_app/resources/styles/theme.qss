@@ -42,6 +42,26 @@ QPushButton:pressed {
     background: #15803d;
 }
 
+QPushButton:disabled {
+    background: #334155;
+    color: #94a3b8;
+}
+
+QLabel#scoreLabel {
+    font-size: 15px;
+    font-weight: 700;
+    color: #38bdf8;
+    padding: 4px 8px;
+}
+
+QLabel#hintLabel {
+    color: #94a3b8;
+}
+
+QLabel#connectionLabel {
+    padding: 0px 8px;
+}
+
 QLineEdit {
     background: #111827;
     color: #e5e7eb;

@@ -402,3 +402,76 @@ class TestSettingsTabSaveButton:
         assert loaded_ui.brake_target == 35
         assert loaded_ui.grid_step_percent == 20
 
+
+
+# ============================================================================
+# Persistence additions
+# ============================================================================
+
+
+class TestCustomTraces:
+    """Tests for the custom brake trace library."""
+
+    def test_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        config.save_custom_traces({"Turn 1": [0, 40, 80, 20, 0]})
+        assert config.load_custom_traces() == {"Turn 1": [0, 40, 80, 20, 0]}
+
+    def test_missing_file_gives_empty_library(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        assert config.load_custom_traces() == {}
+
+    def test_malformed_entries_are_skipped(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        config.custom_traces_path().write_text(
+            '{"ok": [0, 150, -5], "bad": "nope", "empty": [], "junk": ["x"]}', encoding="utf-8"
+        )
+        assert config.load_custom_traces() == {"ok": [0, 100, 0]}
+
+    def test_corrupt_file_gives_empty_library(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        config.custom_traces_path().write_text("{not json", encoding="utf-8")
+        assert config.load_custom_traces() == {}
+
+
+class TestUiConfigWindowState:
+    """Window size and last tab must survive saves from the Settings tab."""
+
+    @pytest.fixture
+    def qapp(self):
+        from PySide6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication([])
+        yield app
+
+    def test_last_tab_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        config.save_ui_config(
+            config.UiConfig(throttle_target=90, brake_target=70, grid_step_percent=20, last_tab=3)
+        )
+        loaded = config.load_ui_config()
+        assert loaded is not None and loaded.last_tab == 3
+
+    def test_settings_save_preserves_window_state(self, tmp_path: Path, monkeypatch, qapp) -> None:
+        from mmt_app.ui.settings_tab import SettingsTab
+
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        settings = SettingsTab()
+        config.save_ui_config(
+            config.UiConfig(
+                throttle_target=90,
+                brake_target=70,
+                grid_step_percent=20,
+                window_width=1400,
+                window_height=900,
+                last_tab=2,
+            )
+        )
+        settings._brake_target_slider.setValue(55)
+        settings._save_ui_settings()
+
+        loaded = config.load_ui_config()
+        assert loaded is not None
+        assert loaded.brake_target == 55
+        assert (loaded.window_width, loaded.window_height, loaded.last_tab) == (1400, 900, 2)

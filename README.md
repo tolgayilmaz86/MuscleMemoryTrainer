@@ -43,9 +43,11 @@ And more to come...
 
 - **Live Telemetry Chart**: Real-time visualization of throttle, brake, and steering inputs with target lines (steering can be toggled)
 - **HID Device Support**: Connect pedals and wheels via USB HID with auto-detection and calibration
-- **Static Brake Training**: Practice following predefined brake traces; save, import, and export custom traces
-- **Active Brake Training**: React to dynamically moving targets with adjustable update rates
-- **Audio Cues**: Optional sound notifications when targets are hit
+- **Trail Brake Training**: Practice following brake traces with a score for every attempt; keep your own trace library (save, import, export, delete)
+- **Active Brake Training**: React to dynamically moving targets with adjustable speed and a live accuracy score
+- **Threshold Training**: Hit floating brake-pressure targets; tracks hits, misses and streaks
+- **Audio Cues**: Optional sound notifications when targets are hit (preview and custom sounds in Settings)
+- **Keyboard Shortcuts**: `Space` to start/pause, `R` to reset
 - **Persistent Settings**: All configurations saved automatically between sessions
 
 ---
@@ -87,13 +89,27 @@ python -m mmt_app
 
 ## Usage
 
-1. **Connect Devices**: Go to the Settings tab and select your pedals/wheel from the dropdown menus
+1. **Connect Devices**: Go to the Settings tab and pick your pedals/wheel from the dropdown menus; they connect immediately. The status bar shows which devices are live, or *Simulated input* when none are.
 2. **Calibrate**: Use the calibration wizards to set axis ranges and offsets
 3. **Select Training Mode**:
    - **Telemetry**: View live input visualization
-   - **Static Brake**: Practice following brake trace patterns
-   - **Active Brake**: React to moving brake targets
-4. **Adjust Settings**: Configure update rates, sound cues, and visual options
+   - **Trail Brake**: Follow a brake trace; each attempt is scored (last / best / average)
+   - **Active Brake**: Match a scrolling target at the center line; live accuracy is shown
+   - **Threshold Training**: Hold the brake at each target's value as it reaches the dashed line; hits, misses and streaks are counted
+4. **Adjust Settings**: Configure update rates, sound cues, and visual options. Everything is saved automatically.
+
+### Keyboard Shortcuts
+
+| Key | Action (on Telemetry and training tabs) |
+|-----|------------------------------------------|
+| `Space` | Start / pause |
+| `R` | Reset |
+
+Training sessions pause automatically when you switch to another tab.
+
+### Scoring
+
+Trail Brake and Active Brake scores are `100 − average difference from the target` (in % points); time where both you and the target are at 0% is ignored. In Threshold Training a target counts as a hit when your brake is within ±5% of its value as it crosses the dashed line.
 
 ---
 
@@ -157,7 +173,7 @@ MuscleMemoryTrainer/
 │   ├── app.py                # Qt application bootstrap
 │   ├── config.py             # Configuration management (dataclasses)
 │   ├── telemetry.py          # Telemetry data handling
-│   ├── static_brake.py       # Brake trace generation algorithms
+│   ├── trail_brake.py        # Brake trace generation and scoring
 │   ├── input/                # HID device handling
 │   │   ├── __init__.py
 │   │   ├── hid_backend.py    # HID session management
@@ -166,8 +182,9 @@ MuscleMemoryTrainer/
 │   │   ├── __init__.py
 │   │   ├── main_window.py    # Main application window
 │   │   ├── settings_tab.py   # Device & settings configuration
-│   │   ├── static_brake_tab.py   # Static brake training
+│   │   ├── trail_brake_tab.py    # Trail brake training
 │   │   ├── active_brake_tab.py   # Active brake training
+│   │   ├── threshold_training_tab.py  # Threshold training
 │   │   ├── telemetry_chart.py    # Chart visualization
 │   │   ├── watermark_chart_view.py
 │   │   └── utils.py          # UI utility functions
@@ -179,7 +196,8 @@ MuscleMemoryTrainer/
 │           └── theme.qss     # Application stylesheet
 ├── tests/                    # Test suite
 │   ├── test_config.py        # Configuration tests
-│   ├── test_static_brake.py  # Brake trace algorithm tests
+│   ├── test_trail_brake.py   # Brake trace algorithm and scoring tests
+│   ├── test_ui_regressions.py  # Training tab and sound settings behaviour
 │   ├── test_utils.py         # Utility function tests
 │   └── test_smoke.py         # Basic smoke tests
 ├── mmt_app.spec              # PyInstaller build specification
@@ -196,13 +214,14 @@ The application follows **SOLID principles** with a clean separation of concerns
 ### UI Layer (`ui/`)
 - **MainWindow**: Orchestrates tabs and coordinates updates via callbacks
 - **SettingsTab**: Device selection, calibration wizards, sound settings
-- **StaticBrakeTab**: Trace selection, recording, playback
+- **TrailBrakeTab**: Trace selection, recording, scoring, trace library
 - **ActiveBrakeTab**: Dynamic target training
+- **ThresholdTrainingTab**: Floating threshold targets with hit/miss scoring
 - **TelemetryChart**: Real-time data visualization
 
 ### Domain Layer
 - **config.py**: Immutable dataclasses for configuration (`InputProfile`, `PedalsConfig`, `WheelConfig`, `UiConfig`)
-- **static_brake.py**: Trace generation with `BrakeTrace`, interpolation, smoothing, jitter functions
+- **trail_brake.py**: Trace generation with `BrakeTrace`, interpolation, smoothing, jitter functions, and `trace_accuracy` scoring
 - **telemetry.py**: Input data processing
 
 ### Input Layer (`input/`)
@@ -230,9 +249,11 @@ Settings are persisted to `config.ini` in your user config directory:
 |----------|----------|
 | Devices | Vendor/product IDs, report lengths, byte offsets |
 | Calibration | Axis min/max values, center points |
-| UI | Update rate, grid visibility, steering visibility |
+| UI | Update rate, grid visibility, steering visibility, window size, last open tab |
 | Training | Target values, selected traces |
-| Audio | Sound file paths, enable/disable flags |
+| Audio | Custom sound file paths (empty = built-in beep), enable/disable flags |
+
+Your saved brake traces live next to `config.ini` in `custom_traces.json`.
 
 ---
 
@@ -261,7 +282,8 @@ pytest --cov=src/mmt_app --cov-report=html
 | File | Coverage |
 |------|----------|
 | `test_config.py` | Configuration save/load, dataclass validation |
-| `test_static_brake.py` | Trace generation, interpolation, smoothing |
+| `test_trail_brake.py` | Trace generation, interpolation, smoothing, scoring |
+| `test_ui_regressions.py` | Training tabs, trace library, sound settings |
 | `test_utils.py` | Axis scaling, clamping, resource paths |
 | `test_smoke.py` | Basic application startup checks |
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
@@ -110,8 +109,8 @@ class InputSetupWizard(QDialog):
 
         # Calibration state
         self._calibration_phase: str | None = None
-        self._baseline_samples: list[bytes] = []
-        self._active_samples: list[bytes] = []
+        self._baseline_samples: list[list[int]] = []
+        self._active_samples: list[list[int]] = []
 
         self._setup_timers()
         self._build_steps()
@@ -342,9 +341,10 @@ class InputSetupWizard(QDialog):
         self._active_samples = []
         self._set_progress_style("baseline")
 
+        axis_name = step.axis.upper() if step.axis is not None else "AXIS"
         self._label.setText(
             f"📊 Phase 1 of 2: Baseline capture\n\n"
-            f"Keep {step.axis.upper()} RELEASED.\n"
+            f"Keep {axis_name} RELEASED.\n"
             f"Recording resting position..."
         )
 
@@ -359,7 +359,7 @@ class InputSetupWizard(QDialog):
 
         self._label.setText(
             f"📊 Phase 2 of 2: Active capture\n\n"
-            f"Press and release {step.axis.upper()} repeatedly.\n"
+            f"Press and release {(step.axis.upper() if step.axis is not None else 'AXIS')} repeatedly.\n"
             f"Move it through its full range..."
         )
 
@@ -373,7 +373,7 @@ class InputSetupWizard(QDialog):
         step = self._steps[self._current_step]
 
         if not self._baseline_samples or not self._active_samples:
-            self._label.setText(f"⚠ {step.axis.capitalize()} detection failed\n\nContinuing...")
+            self._label.setText(f"⚠ {(step.axis or 'axis').capitalize()} detection failed\n\nContinuing...")
             QTimer.singleShot(1000, self._advance)
             return
 
@@ -387,14 +387,14 @@ class InputSetupWizard(QDialog):
         elif step.axis == "steering":
             self._result.steering_offset = offset
 
-        self._on_axis_detected(step.device, step.axis, offset, score)
+        self._on_axis_detected(step.device, str(step.axis), offset, score)
         self._viz_frame.setVisible(False)
 
         if score > 100:
-            self._label.setText(f"✓ {step.axis.capitalize()} detected at byte {offset}\n\nContinuing...")
+            self._label.setText(f"✓ {(step.axis or 'axis').capitalize()} detected at byte {offset}\n\nContinuing...")
         else:
             self._label.setText(
-                f"⚠ {step.axis.capitalize()} detected at byte {offset}\n"
+                f"⚠ {(step.axis or 'axis').capitalize()} detected at byte {offset}\n"
                 f"(low confidence - try again if needed)\n\nContinuing..."
             )
 

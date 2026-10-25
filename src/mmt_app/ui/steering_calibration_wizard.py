@@ -7,7 +7,7 @@ instant configuration of popular wheels.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from PySide6.QtCore import Qt, QTimer
@@ -88,6 +88,8 @@ class SteeringCalibrationWizard(QDialog):
 
         self._setup_timers()
         self._build_ui()
+        # Esc / window close end the dialog via done(); make sure capture stops too.
+        self.finished.connect(lambda _: self._stop_timers())
 
     def _check_for_preset(self) -> None:
         """Check if the connected wheel matches a known preset."""
@@ -357,6 +359,8 @@ class SteeringCalibrationWizard(QDialog):
 
     def _complete_stage(self) -> None:
         """Complete the current capture stage and advance."""
+        if not self.isVisible():
+            return  # Wizard was closed while capturing.
         self._capture_timer.stop()
         stage = self._state.current_stage
         self._state.current_stage = None
@@ -614,17 +618,22 @@ class SteeringCalibrationWizard(QDialog):
         return None
 
     @staticmethod
-    def _variance(values: list[int | float]) -> float:
+    def _variance(values: 'Sequence[int | float]') -> float:
         """Calculate variance of a list of values."""
         if len(values) < 2:
             return 0.0
         mean = sum(values) / len(values)
         return sum((v - mean) ** 2 for v in values) / len(values)
 
-    def _cancel(self) -> None:
-        """Cancel calibration."""
+    def _stop_timers(self) -> None:
+        """Stop live preview and capture so the wheel is not polled in the background."""
         self._capture_timer.stop()
         self._preview_timer.stop()
+        self._state.current_stage = None
+
+    def _cancel(self) -> None:
+        """Cancel calibration."""
+        self._stop_timers()
         self._on_status_update("Steering calibration canceled.")
         self.close()
 
@@ -637,6 +646,5 @@ class SteeringCalibrationWizard(QDialog):
 
     def closeEvent(self, event) -> None:
         """Clean up on close."""
-        self._capture_timer.stop()
-        self._preview_timer.stop()
+        self._stop_timers()
         super().closeEvent(event)

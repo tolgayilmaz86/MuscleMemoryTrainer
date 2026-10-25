@@ -71,10 +71,12 @@ class TelemetryTab(QWidget):
         # Control buttons
         self._start_button = QPushButton("Start")
         self._start_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._start_button.setToolTip("Start / pause live telemetry (Space)")
         self._start_button.clicked.connect(self._on_start_clicked)
-        
+
         self._reset_button = QPushButton("Reset")
         self._reset_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self._reset_button.setToolTip("Clear the chart (R)")
         self._reset_button.clicked.connect(self._on_reset_clicked)
 
         # Button bar
@@ -90,6 +92,7 @@ class TelemetryTab(QWidget):
         # Initialize watermark with default value
         self._chart.set_watermark_text("0")
         self._chart.set_watermark_visible(self._watermark_visible)
+        self._refresh_targets()
 
         # Progress bar labels
         self._throttle_bar_label = QLabel("0%")
@@ -158,10 +161,12 @@ class TelemetryTab(QWidget):
     def set_throttle_target(self, value: int) -> None:
         """Set the throttle target percentage."""
         self._throttle_target = max(0, min(100, int(value)))
+        self._refresh_targets()
 
     def set_brake_target(self, value: int) -> None:
         """Set the brake target percentage."""
         self._brake_target = max(0, min(100, int(value)))
+        self._refresh_targets()
 
     def set_grid_step(self, step_percent: int) -> None:
         """Set the grid step percentage."""
@@ -190,15 +195,13 @@ class TelemetryTab(QWidget):
     def append_sample(self, sample: "TelemetrySample") -> None:
         """Append a telemetry sample to the chart."""
         self._chart.append(sample)
-        self._chart.set_targets(
-            throttle_target=float(self._throttle_target),
-            brake_target=float(self._brake_target),
-        )
+        self._refresh_targets()
         self._update_bars(sample)
 
     def reset(self) -> None:
         """Reset the chart and progress bars."""
         self._chart.reset()
+        self._refresh_targets()
         self._throttle_bar.setValue(0)
         self._brake_bar.setValue(0)
         self._throttle_bar_label.setText("0%")
@@ -238,6 +241,13 @@ class TelemetryTab(QWidget):
     # -------------------------------------------------------------------------
     # Helper methods
     # -------------------------------------------------------------------------
+
+    def _refresh_targets(self) -> None:
+        """Redraw the target lines (also while paused, so changes show immediately)."""
+        self._chart.set_targets(
+            throttle_target=float(self._throttle_target),
+            brake_target=float(self._brake_target),
+        )
 
     def _apply_grid_step(self, step: int) -> None:
         """Apply the grid step to the chart."""

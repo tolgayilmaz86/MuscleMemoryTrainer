@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import Callable, List, Protocol
+from typing import Callable, List, Optional, Protocol, Sequence
 
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QScatterSeries, QValueAxis
 from PySide6.QtCore import QPointF, Qt, QTimer
@@ -38,7 +38,6 @@ from ..config import (
     DEFAULT_THRESHOLD_SPEED,
     DEFAULT_THRESHOLD_STEP,
 )
-from .watermark_chart_view import WatermarkChartView
 from .utils import AXIS_MAX, AXIS_MIN, clamp
 
 
@@ -58,6 +57,8 @@ _AXIS_X_MAX = 100.0
 _TARGET_LIFETIME_X = 100.0  # X distance a target travels before removal
 _INDICATOR_SIZE = 12.0  # Size of the brake position indicator
 _TARGET_MARKER_SIZE = 40.0  # Size of target markers
+_INDICATOR_X = 10.0  # X position of the brake indicator / hit line
+HIT_TOLERANCE = 5.0  # Brake must be within +/- this many % points of the target
 
 
 # -----------------------------------------------------------------------------
@@ -71,6 +72,7 @@ class FloatingTarget:
 
     x: float
     value: int  # Target brake percentage (0-100)
+    result: Optional[str] = None  # None while pending, then "hit" or "miss"
 
     def move_left(self, speed: float) -> None:
         """Move the target leftward by the given speed."""
@@ -79,6 +81,10 @@ class FloatingTarget:
     def is_expired(self) -> bool:
         """Check if the target has moved off screen."""
         return self.x < 0
+
+    def matches(self, brake: float, tolerance: float = HIT_TOLERANCE) -> bool:
+        """Return True if `brake` is within `tolerance` % points of the target value."""
+        return abs(brake - self.value) <= tolerance
 
 
 @dataclass
@@ -89,6 +95,20 @@ class ThresholdTrainingState:
     targets: List[FloatingTarget] = field(default_factory=list)
     current_brake: float = 0.0
     spawn_counter: int = 0
+    hits: int = 0
+    misses: int = 0
+    streak: int = 0
+    best_streak: int = 0
+
+    def record_result(self, hit: bool) -> None:
+        """Update hit/miss counters and the current streak."""
+        if hit:
+            self.hits += 1
+            self.streak += 1
+            self.best_streak = max(self.best_streak, self.streak)
+        else:
+            self.misses += 1
+            self.streak = 0
 
 
 # -----------------------------------------------------------------------------
@@ -159,15 +179,15 @@ class LabeledTargetChartView(QChartView):
     a large watermark display like WatermarkChartView.
     """
 
-    def __init__(self, chart: QChart, targets_series: QScatterSeries) -> None:
+    def __init__(self, chart: QChart, targets_series: Sequence[QScatterSeries]) -> None:
         """Initialize the labeled chart view.
 
         Args:
             chart: The chart to display.
-            targets_series: The scatter series containing target points.
+            targets_series: The scatter series whose points get value labels.
         """
         super().__init__(chart)
-        self._targets_series = targets_series
+        self._targets_series = list(targets_series)
 
         # Pre-create and cache fonts and metrics for performance
         self._label_font = QFont()
@@ -233,6 +253,8 @@ class LabeledTargetChartView(QChartView):
             self._cached_watermark_font.setPixelSize(max(24, font_size))
             self._cached_watermark_metrics = QFontMetrics(self._cached_watermark_font)
 
+        assert self._cached_watermark_metrics is not None
+
         painter = QPainter(self.viewport())
         painter.setFont(self._cached_watermark_font)
         painter.setPen(self._watermark_color)
@@ -249,7 +271,7 @@ class LabeledTargetChartView(QChartView):
 
     def _draw_target_labels(self) -> None:
         """Draw value labels centered on each target marker."""
-        if self._targets_series.count() == 0:
+        if not any(series.count() for series in self._targets_series):
             return
 
         chart = self.chart()
@@ -268,22 +290,23 @@ class LabeledTargetChartView(QChartView):
         metrics = self._label_metrics
         text_height_offset = metrics.height() // 4
 
-        for i in range(self._targets_series.count()):
-            point = self._targets_series.at(i)
-            # Map data coordinates to pixel coordinates
-            pixel_pos = chart.mapToPosition(point, self._targets_series)
+        for series in self._targets_series:
+            for i in range(series.count()):
+                point = series.at(i)
+                # Map data coordinates to pixel coordinates
+                pixel_pos = chart.mapToPosition(point, series)
 
-            # Get the label text (Y value = threshold percentage)
-            label = str(int(point.y()))
+                # Get the label text (Y value = threshold percentage)
+                label = str(int(point.y()))
 
-            # Calculate text dimensions for centering
-            text_width = metrics.horizontalAdvance(label)
+                # Calculate text dimensions for centering
+                text_width = metrics.horizontalAdvance(label)
 
-            # Draw text centered on the marker
-            x = int(pixel_pos.x() - text_width / 2)
-            y = int(pixel_pos.y() + text_height_offset)
+                # Draw text centered on the marker
+                x = int(pixel_pos.x() - text_width / 2)
+                y = int(pixel_pos.y() + text_height_offset)
 
-            painter.drawText(x, y, label)
+                painter.drawText(x, y, label)
 
         painter.end()
 
@@ -300,10 +323,23 @@ class ThresholdChartBuilder:
     """
 
     @staticmethod
+    def _create_target_series(name: str, fill: str, border: str) -> QScatterSeries:
+        """Create a scatter series for target bubbles."""
+        series = QScatterSeries()
+        series.setName(name)
+        series.setMarkerSize(_TARGET_MARKER_SIZE)
+        series.setColor(QColor(fill))
+        series.setBorderColor(QColor(border))
+        return series
+
+    @staticmethod
     def create_chart() -> tuple[
         QChart,
         QScatterSeries,
         QScatterSeries,
+        QScatterSeries,
+        QScatterSeries,
+        QLineSeries,
         QLineSeries,
         QValueAxis,
         QValueAxis,
@@ -311,14 +347,13 @@ class ThresholdChartBuilder:
         """Create the chart with all necessary series.
 
         Returns:
-            Tuple of (chart, target_series, indicator_series, brake_line_series, x_axis, y_axis)
+            Tuple of (chart, target_series, hit_series, miss_series, indicator_series,
+            brake_line_series, hit_line_series, x_axis, y_axis)
         """
-        # Target bubbles (scatter series for circular markers)
-        series_targets = QScatterSeries()
-        series_targets.setName("Targets")
-        series_targets.setMarkerSize(_TARGET_MARKER_SIZE)
-        series_targets.setColor(QColor("#ef4444"))  # Red circles
-        series_targets.setBorderColor(QColor("#dc2626"))
+        # Target bubbles (scatter series for circular markers): pending, hit, missed
+        series_targets = ThresholdChartBuilder._create_target_series("Targets", "#ef4444", "#dc2626")
+        series_hits = ThresholdChartBuilder._create_target_series("Hit", "#22c55e", "#16a34a")
+        series_misses = ThresholdChartBuilder._create_target_series("Missed", "#64748b", "#475569")
 
         # Brake position indicator (smaller circle at current brake value)
         series_indicator = QScatterSeries()
@@ -333,10 +368,20 @@ class ThresholdChartBuilder:
         pen = QPen(QColor(56, 189, 248, 140), 3)
         series_brake_line.setPen(pen)
 
+        # Vertical line where targets are scored
+        series_hit_line = QLineSeries()
+        series_hit_line.setName("Hit line")
+        series_hit_line.setPen(QPen(QColor("#94a3b8"), 1, Qt.DashLine))
+        series_hit_line.append(QPointF(_INDICATOR_X, float(AXIS_MIN)))
+        series_hit_line.append(QPointF(_INDICATOR_X, float(AXIS_MAX)))
+
         chart = QChart()
         # Performance: Disable all animations for real-time updates
         chart.setAnimationOptions(QChart.NoAnimation)
+        chart.addSeries(series_hit_line)
         chart.addSeries(series_brake_line)
+        chart.addSeries(series_misses)
+        chart.addSeries(series_hits)
         chart.addSeries(series_targets)
         chart.addSeries(series_indicator)
 
@@ -356,14 +401,31 @@ class ThresholdChartBuilder:
         chart.addAxis(axis_x, Qt.AlignBottom)
         chart.addAxis(axis_y, Qt.AlignLeft)
 
-        for series in (series_targets, series_indicator, series_brake_line):
+        for series in (
+            series_targets,
+            series_hits,
+            series_misses,
+            series_indicator,
+            series_brake_line,
+            series_hit_line,
+        ):
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
 
         chart.legend().setVisible(True)
         chart.setTitle("Threshold Training")
 
-        return chart, series_targets, series_indicator, series_brake_line, axis_x, axis_y
+        return (
+            chart,
+            series_targets,
+            series_hits,
+            series_misses,
+            series_indicator,
+            series_brake_line,
+            series_hit_line,
+            axis_x,
+            axis_y,
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -414,17 +476,27 @@ class ThresholdTrainingTab(QWidget):
         """Initialize all UI components."""
         # Status label
         self._status_label = QLabel(
-            "Press Start to begin. Match the floating targets with your brake input."
+            "Press Start, then hold the brake at each target's value as it reaches "
+            f"the dashed line (within \u00b1{HIT_TOLERANCE:.0f}%)."
         )
 
         # Control buttons
         self._start_btn = QPushButton("Start")
         self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._start_btn.setToolTip("Start / pause (Space)")
         self._start_btn.clicked.connect(self.toggle_running)
 
         self._reset_btn = QPushButton("Reset")
         self._reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self._reset_btn.setToolTip("Clear targets and score (R)")
         self._reset_btn.clicked.connect(self.reset)
+
+        self._score_label = QLabel()
+        self._score_label.setObjectName("scoreLabel")
+        self._score_label.setToolTip(
+            f"A target is hit when your brake is within \u00b1{HIT_TOLERANCE:.0f}% "
+            "of its value as it crosses the dashed line."
+        )
 
         # Step slider (5, 10, 15, 20, 25)
         self._step_slider = QSlider(Qt.Horizontal)
@@ -454,13 +526,18 @@ class ThresholdTrainingTab(QWidget):
         (
             self._chart,
             self._series_targets,
+            self._series_hits,
+            self._series_misses,
             self._series_indicator,
             self._series_brake_line,
+            self._series_hit_line,
             self._axis_x,
             self._axis_y,
         ) = ThresholdChartBuilder.create_chart()
 
-        self._chart_view = LabeledTargetChartView(self._chart, self._series_targets)
+        self._chart_view = LabeledTargetChartView(
+            self._chart, (self._series_misses, self._series_hits, self._series_targets)
+        )
 
         # Layout
         buttons = QHBoxLayout()
@@ -468,6 +545,7 @@ class ThresholdTrainingTab(QWidget):
         buttons.addWidget(self._start_btn)
         buttons.addWidget(self._reset_btn)
         buttons.addStretch()
+        buttons.addWidget(self._score_label)
 
         step_row = QHBoxLayout()
         step_row.addWidget(QLabel("Step:"))
@@ -494,6 +572,7 @@ class ThresholdTrainingTab(QWidget):
         """Initialize application state."""
         self._state = ThresholdTrainingState()
         self._update_display()
+        self._update_score_label()
 
     def _load_config(self) -> None:
         """Load persisted configuration."""
@@ -536,6 +615,7 @@ class ThresholdTrainingTab(QWidget):
         self._timer.stop()
         self._state = ThresholdTrainingState()
         self._update_display()
+        self._update_score_label()
         self._start_btn.setText("Start")
         self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self._status_label.setText("Reset. Press Start when ready.")
@@ -560,7 +640,19 @@ class ThresholdTrainingTab(QWidget):
         self._state.running = True
         self._start_btn.setText("Pause")
         self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
-        self._status_label.setText("Match the floating targets with your brake input!")
+        self._status_label.setText(
+            "Hold the brake at each target's value as it reaches the dashed line."
+        )
+
+    def pause(self) -> None:
+        """Pause the training session (no-op if already paused)."""
+        if self._state.running:
+            self._pause()
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """Pause when the tab is left so targets aren't missed unattended."""
+        self.pause()
+        super().hideEvent(event)
 
     def _pause(self) -> None:
         """Pause the training session."""
@@ -595,12 +687,35 @@ class ThresholdTrainingTab(QWidget):
         self._set_watermark_percent(self._state.current_brake)
 
     def _move_targets(self, scroll_speed: float) -> None:
-        """Move all targets leftward and remove expired ones."""
+        """Move all targets leftward, score those crossing the hit line, drop expired ones."""
         for target in self._state.targets:
+            previous_x = target.x
             target.move_left(scroll_speed)
+            if target.result is None and previous_x >= _INDICATOR_X > target.x:
+                self._score_target(target)
 
         # Remove targets that have gone off screen
         self._state.targets = [t for t in self._state.targets if not t.is_expired()]
+
+    def _score_target(self, target: FloatingTarget) -> None:
+        """Judge a target as it crosses the hit line and update the score."""
+        hit = target.matches(self._state.current_brake)
+        target.result = "hit" if hit else "miss"
+        self._state.record_result(hit)
+        self._update_score_label()
+
+    def _update_score_label(self) -> None:
+        """Show hits, misses, hit rate and streaks."""
+        state = self._state
+        total = state.hits + state.misses
+        if total == 0:
+            self._score_label.setText("Hits: 0  \u00b7  Misses: 0")
+            return
+        rate = 100.0 * state.hits / total
+        self._score_label.setText(
+            f"Hits: {state.hits}  \u00b7  Misses: {state.misses}  \u00b7  {rate:.0f}%"
+            f"  \u00b7  Streak: {state.streak} (best {state.best_streak})"
+        )
 
     def _spawn_target(self) -> None:
         """Spawn a new target at the right edge."""
@@ -619,15 +734,17 @@ class ThresholdTrainingTab(QWidget):
         self._render_brake_line()
 
     def _render_targets(self) -> None:
-        """Render floating target circles."""
-        points = [QPointF(t.x, float(t.value)) for t in self._state.targets]
-        self._series_targets.replace(points)
+        """Render floating target circles, colored by result."""
+        by_result: dict[Optional[str], list[QPointF]] = {None: [], "hit": [], "miss": []}
+        for t in self._state.targets:
+            by_result[t.result].append(QPointF(t.x, float(t.value)))
+        self._series_targets.replace(by_result[None])
+        self._series_hits.replace(by_result["hit"])
+        self._series_misses.replace(by_result["miss"])
 
     def _render_brake_indicator(self) -> None:
-        """Render the small circle at the current brake position."""
-        # Position the indicator at a fixed X position (left side) at current brake Y
-        indicator_x = 10.0  # Fixed position on the left
-        self._series_indicator.replace([QPointF(indicator_x, self._state.current_brake)])
+        """Render the small circle at the current brake position on the hit line."""
+        self._series_indicator.replace([QPointF(_INDICATOR_X, self._state.current_brake)])
 
     def _render_brake_line(self) -> None:
         """Render a horizontal line at the current brake level."""

@@ -13,13 +13,12 @@ The SettingsTab acts as a facade, delegating to:
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
-    QHBoxLayout,
     QLabel,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
@@ -30,6 +29,7 @@ from mmt_app.config import (
     WheelConfig,
     UiConfig,
     load_input_profile,
+    load_ui_config,
     save_input_profile,
     save_ui_config,
     DEFAULT_STEERING_CENTER,
@@ -111,6 +111,7 @@ class SettingsTab(QWidget):
         self._device_selector = DeviceSelector(
             parent=self,
             on_status_update=self._set_status,
+            on_devices_connected=self._schedule_save_mapping,
         )
 
         self._calibration_settings = CalibrationSettingsGroup(
@@ -118,6 +119,7 @@ class SettingsTab(QWidget):
             on_calibrate_pedals=self._start_pedals_calibration,
             on_calibrate_steering=self._start_steering_calibration,
             on_steering_range_changed=self._on_steering_range_changed,
+            on_advanced_changed=self._schedule_save_mapping,
         )
 
         self._sound_settings = SoundSettingsGroup(
@@ -136,11 +138,16 @@ class SettingsTab(QWidget):
             on_settings_changed=self._schedule_save_ui_settings,
         )
 
-        # Setup save debounce timer
+        # Setup save debounce timers
         self._ui_save_timer = QTimer(self)
         self._ui_save_timer.setSingleShot(True)
         self._ui_save_timer.setInterval(_UI_SAVE_DEBOUNCE_MS)
         self._ui_save_timer.timeout.connect(self._save_ui_settings)
+
+        self._mapping_save_timer = QTimer(self)
+        self._mapping_save_timer.setSingleShot(True)
+        self._mapping_save_timer.setInterval(_UI_SAVE_DEBOUNCE_MS)
+        self._mapping_save_timer.timeout.connect(lambda: self.save_current_mapping(notify=False))
 
         # Build layout
         self._build_ui()
@@ -261,6 +268,15 @@ class SettingsTab(QWidget):
         """Close all HID sessions (call on application exit)."""
         self._device_selector.close_sessions()
 
+    def flush_pending_saves(self) -> None:
+        """Write any debounced settings immediately (call on application exit)."""
+        if self._mapping_save_timer.isActive():
+            self._mapping_save_timer.stop()
+            self.save_current_mapping(notify=False)
+        if self._ui_save_timer.isActive():
+            self._ui_save_timer.stop()
+            self._save_ui_settings()
+
     # -------------------------------------------------------------------------
     # Public methods - Sound (delegated)
     # -------------------------------------------------------------------------
@@ -272,6 +288,10 @@ class SettingsTab(QWidget):
     def resolve_sound_path(self, kind: str) -> str:
         """Get the stored sound path, falling back to the default."""
         return self._sound_settings.resolve_sound_path(kind)
+
+    def custom_sound_path(self, kind: str) -> str | None:
+        """Get the user-selected sound path, or None when using the default."""
+        return self._sound_settings.custom_sound_path(kind)
 
     def play_target_sound(self, kind: str) -> None:
         """Play the selected sound for the given target."""
@@ -341,23 +361,20 @@ class SettingsTab(QWidget):
 
         layout.addStretch()
 
-        # Save button
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-
-        save_btn = QPushButton("Save")
-        save_btn.clicked.connect(self.save_current_mapping)
-        btn_row.addWidget(save_btn)
-
-        btn_row.addStretch()
-        layout.addLayout(btn_row)
+        autosave_hint = QLabel("Changes are saved automatically.")
+        autosave_hint.setObjectName("hintLabel")
+        layout.addWidget(autosave_hint)
 
     # -------------------------------------------------------------------------
     # Configuration persistence
     # -------------------------------------------------------------------------
 
-    def save_current_mapping(self) -> None:
-        """Persist the current device configuration to config.ini."""
+    def save_current_mapping(self, *, notify: bool = True) -> None:
+        """Persist the current device configuration to config.ini.
+
+        Args:
+            notify: Whether to report the save in the status line.
+        """
         pedals_cfg = None
         wheel_cfg = None
 
@@ -395,7 +412,8 @@ class SettingsTab(QWidget):
             )
 
         save_input_profile(InputProfile(pedals=pedals_cfg, wheel=wheel_cfg, ui=None))
-        self._set_status("Device configuration saved to config.ini.")
+        if notify:
+            self._set_status("Device configuration saved to config.ini.")
 
     def _load_persisted_config(self) -> None:
         """Load persisted device and UI configuration on startup."""
@@ -440,22 +458,30 @@ class SettingsTab(QWidget):
         """Debounce UI settings save to avoid excessive writes."""
         self._ui_save_timer.start(_UI_SAVE_DEBOUNCE_MS)
 
-    def _save_ui_settings(self) -> None:
-        """Persist UI-related settings."""
-        sound_settings = self._sound_settings.get_sound_settings()
+    def _schedule_save_mapping(self) -> None:
+        """Debounce device mapping save (sliders and spin boxes fire per step)."""
+        self._mapping_save_timer.start(_UI_SAVE_DEBOUNCE_MS)
 
-        cfg = UiConfig(
+    def _save_ui_settings(self) -> None:
+        """Persist UI-related settings.
+
+        Fields owned by the main window (window size, last tab) are carried
+        over from the existing config instead of being reset to defaults.
+        """
+        settings = dict(
             throttle_target=self._display_settings.throttle_target,
             brake_target=self._display_settings.brake_target,
             grid_step_percent=self._display_settings.grid_step,
             update_hz=self._display_settings.update_rate,
             show_steering=self._display_settings.show_steering,
             show_watermark=self._display_settings.show_watermark,
-            throttle_sound_enabled=sound_settings["throttle_sound_enabled"],
-            throttle_sound_path=sound_settings["throttle_sound_path"],
-            brake_sound_enabled=sound_settings["brake_sound_enabled"],
-            brake_sound_path=sound_settings["brake_sound_path"],
+            throttle_sound_enabled=self._sound_settings.sound_enabled("throttle"),
+            throttle_sound_path=self._sound_settings.custom_sound_path("throttle"),
+            brake_sound_enabled=self._sound_settings.sound_enabled("brake"),
+            brake_sound_path=self._sound_settings.custom_sound_path("brake"),
         )
+        existing = load_ui_config()
+        cfg = replace(existing, **settings) if existing else UiConfig(**settings)
         save_ui_config(cfg)
 
     # -------------------------------------------------------------------------
@@ -465,7 +491,7 @@ class SettingsTab(QWidget):
     def _start_pedals_calibration(self) -> None:
         """Start the pedals calibration wizard."""
         if not self.pedals_session.is_open:
-            self._set_status("Select pedals HID device first, then click Connect.")
+            self._set_status("Pedals not connected. Select them under Device Selection first.")
             return
 
         wizard = PedalsCalibrationWizard(
@@ -486,7 +512,7 @@ class SettingsTab(QWidget):
             self._calibration_settings.set_brake_offset(result.brake_offset)
 
         try:
-            self.save_current_mapping()
+            self.save_current_mapping(notify=False)
             self._set_status(
                 f"Pedals calibrated: throttle={result.throttle_offset}, brake={result.brake_offset}"
             )
@@ -496,7 +522,7 @@ class SettingsTab(QWidget):
     def _start_steering_calibration(self) -> None:
         """Start the steering calibration wizard."""
         if not self.wheel_session.is_open:
-            self._set_status("Wheel not connected. Click Connect first.")
+            self._set_status("Wheel not connected. Select it under Device Selection first.")
             return
 
         wizard = SteeringCalibrationWizard(
@@ -516,17 +542,14 @@ class SettingsTab(QWidget):
         self._steering_half_range = result.half_range
 
         try:
-            self.save_current_mapping()
+            self.save_current_mapping(notify=False)
         except Exception:
             pass
 
     def _on_steering_range_changed(self, value: int) -> None:
         """Handle steering range slider changes."""
         self._steering_range = value
-        try:
-            self.save_current_mapping()
-        except Exception:
-            pass
+        self._schedule_save_mapping()
 
     # -------------------------------------------------------------------------
     # Status helper

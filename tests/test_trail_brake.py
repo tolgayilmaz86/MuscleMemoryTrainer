@@ -17,6 +17,7 @@ from mmt_app.trail_brake import (
     _clamp_points,
     _anchors_for_length,
     _interpolate_anchors,
+    trace_accuracy,
 )
 
 
@@ -463,3 +464,37 @@ class TestPresets:
         p2 = presets()
         for name in p1:
             assert p1[name].points == p2[name].points
+
+
+# ============================================================================
+# Scoring Tests
+# ============================================================================
+
+
+class TestTraceAccuracy:
+    """Tests for trace_accuracy scoring."""
+
+    def test_perfect_match_scores_100(self) -> None:
+        points = [0, 20, 60, 100, 40, 0]
+        assert trace_accuracy(points, points) == 100.0
+
+    def test_score_is_100_minus_mean_error(self) -> None:
+        """Mean absolute error of 10 points gives 90."""
+        assert trace_accuracy([0, 50, 100, 0], [0, 40, 90, 0]) == 90.0
+
+    def test_idle_steps_are_ignored(self) -> None:
+        """Steps where both traces are 0 must not inflate the score."""
+        short = trace_accuracy([50, 50], [30, 30])
+        padded = trace_accuracy([0, 0, 50, 50, 0, 0], [0, 0, 30, 30, 0, 0])
+        assert short == padded == 80.0
+
+    def test_missed_braking_is_penalized(self) -> None:
+        """Releasing early counts the remaining target as error."""
+        # Errors over the active steps are 0, 50, 50 -> mean 33.3.
+        assert trace_accuracy([0, 50, 50, 50], [0, 50, 0, 0]) == pytest.approx(100 - 100 / 3)
+
+    def test_never_negative(self) -> None:
+        assert trace_accuracy([100, 100], [0, 0]) == 0.0
+
+    def test_nothing_to_compare(self) -> None:
+        assert trace_accuracy([0, 0, 0], [0, 0, 0]) == 0.0

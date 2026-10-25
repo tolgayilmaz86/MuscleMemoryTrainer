@@ -8,16 +8,20 @@ Design notes:
 """
 
 import math
-from pathlib import Path
+from collections.abc import Callable
 
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
+    QLabel,
     QMainWindow,
     QStatusBar,
     QTabWidget,
+    QWidget,
 )
 
 from ..config import UiConfig, load_ui_config, save_ui_config
+from ..input.hid_backend import HidSession
 from ..telemetry import TelemetrySample
 from .about_tab import AboutTab
 from .active_brake_tab import ActiveBrakeTab
@@ -67,6 +71,11 @@ class MainWindow(QMainWindow):
 
         self._status_bar = QStatusBar()
         self.setStatusBar(self._status_bar)
+        # Permanent indicator of where input comes from; transient messages use showMessage.
+        self._connection_label = QLabel()
+        self._connection_label.setObjectName("connectionLabel")
+        self._connection_label.setTextFormat(Qt.RichText)
+        self._status_bar.addPermanentWidget(self._connection_label)
 
         self._max_points = _DEFAULT_MAX_CHART_POINTS
         self._sample_index = 0
@@ -77,6 +86,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._setup_timers()
+        self._setup_shortcuts()
         self._load_persisted_config()
         self._update_status()
 
@@ -120,10 +130,10 @@ class MainWindow(QMainWindow):
         self._telemetry_tab.connect_start_stop(self._on_telemetry_start_stop)
         self._telemetry_tab.connect_reset(self._on_telemetry_reset)
         
-        self._active_brake_tab = ActiveBrakeTab(read_brake_percent=self._read_brake_for_active_tab)
-        self._trail_brake_tab = TrailBrakeTab(read_brake_percent=self._read_brake_for_static_tab)
+        self._active_brake_tab = ActiveBrakeTab(read_brake_percent=self._read_brake_percent)
+        self._trail_brake_tab = TrailBrakeTab(read_brake_percent=self._read_brake_percent)
         self._threshold_training_tab = ThresholdTrainingTab(
-            read_brake_percent=self._read_brake_for_active_tab
+            read_brake_percent=self._read_brake_percent
         )
 
         self._about_tab = AboutTab(app_name=self._app_name, version=self._version)
@@ -135,25 +145,65 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._threshold_training_tab, "Threshold Training")
         tabs.addTab(self._settings_tab, "Settings")
         tabs.addTab(self._about_tab, "About")
+        self._tabs = tabs
         self.setCentralWidget(tabs)
+
+    def _setup_shortcuts(self) -> None:
+        """Space starts/pauses and R resets the telemetry or training tab in view."""
+        self._tab_actions: list[tuple[QWidget, Callable[[], None], Callable[[], None]]] = [
+            (self._telemetry_tab, self._toggle_telemetry, self._on_telemetry_reset),
+            (
+                self._trail_brake_tab,
+                self._trail_brake_tab.toggle_recording,
+                self._trail_brake_tab.reset_attempt,
+            ),
+            (
+                self._active_brake_tab,
+                self._active_brake_tab.toggle_running,
+                self._active_brake_tab.reset,
+            ),
+            (
+                self._threshold_training_tab,
+                self._threshold_training_tab.toggle_running,
+                self._threshold_training_tab.reset,
+            ),
+        ]
+        self._start_shortcut = QShortcut(QKeySequence(Qt.Key_Space), self)
+        self._start_shortcut.activated.connect(lambda: self._run_tab_action(start=True))
+        self._reset_shortcut = QShortcut(QKeySequence(Qt.Key_R), self)
+        self._reset_shortcut.activated.connect(lambda: self._run_tab_action(start=False))
+        self._tabs.currentChanged.connect(self._on_tab_changed)
+        self._on_tab_changed(self._tabs.currentIndex())
+
+    def _current_tab_actions(self) -> tuple[Callable[[], None], Callable[[], None]] | None:
+        """Return (start/pause, reset) for the visible tab, if it has them."""
+        current = self._tabs.currentWidget()
+        for tab, toggle, reset in self._tab_actions:
+            if tab is current:
+                return toggle, reset
+        return None
+
+    def _run_tab_action(self, *, start: bool) -> None:
+        """Run the visible tab's start/pause or reset action."""
+        actions = self._current_tab_actions()
+        if actions is not None:
+            (actions[0] if start else actions[1])()
+
+    def _on_tab_changed(self, _index: int) -> None:
+        """Only claim Space/R on tabs that use them (keeps Settings keyboard-friendly)."""
+        enabled = self._current_tab_actions() is not None
+        self._start_shortcut.setEnabled(enabled)
+        self._reset_shortcut.setEnabled(enabled)
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         """Ensure HID sessions are closed and settings saved before shutdown."""
+        self._settings_tab.flush_pending_saves()
         self._save_ui_settings()
         self._settings_tab.close_sessions()
         super().closeEvent(event)
 
-    def _read_brake_for_active_tab(self) -> float:
-        """Provide live brake input to the Active Brake tab.
-
-        Works even when the main telemetry timer is paused.
-        """
-        sample = self._read_inputs()
-        self._last_sample = sample
-        return float(sample.brake)
-
-    def _read_brake_for_static_tab(self) -> float:
-        """Provide live brake input to Trail Brake tab.
+    def _read_brake_percent(self) -> float:
+        """Provide live brake input to the training tabs.
 
         Works even when the main telemetry timer is paused.
         """
@@ -168,6 +218,8 @@ class MainWindow(QMainWindow):
     def _on_settings_status_update(self, message: str) -> None:
         """Handle status updates from SettingsTab."""
         self._status_bar.showMessage(message, 5000)
+        if hasattr(self, "_connection_label") and hasattr(self, "_settings_tab"):
+            self._update_status()
 
     def _on_settings_targets_changed(self) -> None:
         """Handle throttle/brake target changes from SettingsTab."""
@@ -179,8 +231,6 @@ class MainWindow(QMainWindow):
         """Handle grid step changes from SettingsTab."""
         if hasattr(self, "_telemetry_tab"):
             self._telemetry_tab.set_grid_step(step)
-        if hasattr(self, "_threshold_training_tab"):
-            self._threshold_training_tab.set_grid_step(step)
         if hasattr(self, "_trail_brake_tab"):
             self._trail_brake_tab.set_grid_step(step)
         if hasattr(self, "_active_brake_tab"):
@@ -201,6 +251,10 @@ class MainWindow(QMainWindow):
     # -------------------------------------------------------------------------
     # Core functionality
     # -------------------------------------------------------------------------
+
+    def _toggle_telemetry(self) -> None:
+        """Start or pause live telemetry."""
+        self._on_telemetry_start_stop(not self._telemetry_tab.is_streaming)
 
     def _on_telemetry_start_stop(self, start: bool) -> None:
         """Handle start/stop from telemetry tab."""
@@ -236,11 +290,7 @@ class MainWindow(QMainWindow):
         interval_ms = max(1, int(1000 / hz))
         self._update_rate = hz
         self._timer.setInterval(interval_ms)
-        if hasattr(self, "_active_brake_tab"):
-            try:
-                self._active_brake_tab.set_update_rate(hz)
-            except Exception:
-                pass
+        # Active Brake has its own speed slider, so the global rate is not pushed to it.
 
     def _set_show_steering(self, visible: bool, *, update_checkbox: bool = False) -> None:
         """Apply steering visibility to the chart."""
@@ -276,11 +326,12 @@ class MainWindow(QMainWindow):
             show_steering=self._show_steering,
             show_watermark=self._show_watermark,
             throttle_sound_enabled=self._settings_tab.sound_enabled("throttle"),
-            throttle_sound_path=self._settings_tab.resolve_sound_path("throttle"),
+            throttle_sound_path=self._settings_tab.custom_sound_path("throttle"),
             brake_sound_enabled=self._settings_tab.sound_enabled("brake"),
-            brake_sound_path=self._settings_tab.resolve_sound_path("brake"),
+            brake_sound_path=self._settings_tab.custom_sound_path("brake"),
             window_width=self.width(),
             window_height=self.height(),
+            last_tab=self._tabs.currentIndex(),
         )
         save_ui_config(cfg)
 
@@ -298,10 +349,13 @@ class MainWindow(QMainWindow):
                 self._telemetry_tab.set_brake_target(ui_cfg.brake_target)
                 self._telemetry_tab.set_grid_step(ui_cfg.grid_step_percent)
                 # Set grid step on all training tabs
-                self._threshold_training_tab.set_grid_step(ui_cfg.grid_step_percent)
                 self._trail_brake_tab.set_grid_step(ui_cfg.grid_step_percent)
                 self._active_brake_tab.set_grid_step(ui_cfg.grid_step_percent)
-                self._set_update_rate(ui_cfg.update_hz)
+                # Keep the Settings controls in sync with what is applied, otherwise the
+                # next Settings auto-save would write the widget defaults back.
+                self._settings_tab.set_update_rate(ui_cfg.update_hz, update_slider=True)
+                self._set_update_rate(self._settings_tab.update_rate)
+                self._settings_tab.set_show_steering(ui_cfg.show_steering, update_checkbox=True)
                 self._set_show_steering(ui_cfg.show_steering)
                 self._set_show_watermark(ui_cfg.show_watermark)
                 self._settings_tab.set_show_watermark(ui_cfg.show_watermark, update_checkbox=True)
@@ -312,6 +366,7 @@ class MainWindow(QMainWindow):
                     brake_path=ui_cfg.brake_sound_path,
                 )
                 self.resize(ui_cfg.window_width, ui_cfg.window_height)
+                self._tabs.setCurrentIndex(clamp_int(ui_cfg.last_tab, 0, self._tabs.count() - 1))
             else:
                 self._set_update_rate(self._update_rate)
                 self._set_show_steering(self._show_steering)
@@ -322,14 +377,23 @@ class MainWindow(QMainWindow):
             self._set_show_watermark(self._show_watermark)
 
     def _update_status(self) -> None:
-        """Update the status bar with current device usage."""
+        """Update the permanent status-bar indicator with the current input source."""
         parts: list[str] = []
-        if self._settings_tab.pedals_session.is_open:
-            parts.append("Pedals: connected")
-        if self._settings_tab.wheel_session.is_open:
-            parts.append("Wheel: connected")
-        message = " | ".join(parts) if parts else "Simulator mode (no devices streaming)"
-        self._status_bar.showMessage(message)
+        for name, session in (
+            ("Pedals", self._settings_tab.pedals_session),
+            ("Wheel", self._settings_tab.wheel_session),
+        ):
+            if session.is_open:
+                parts.append(f"{name}: {session.product_string or 'connected'}")
+        if parts:
+            text = "<span style='color:#22c55e'>●</span> " + "  |  ".join(parts)
+        else:
+            text = (
+                "<span style='color:#f59e0b'>●</span> Simulated input "
+                "— connect your pedals in Settings"
+            )
+        if text != self._connection_label.text():
+            self._connection_label.setText(text)
 
     # -------------------------------------------------------------------------
     # Sound management
@@ -367,57 +431,66 @@ class MainWindow(QMainWindow):
         wheel_session = self._settings_tab.wheel_session
         
         if hid_available() and (pedals_session.is_open or wheel_session.is_open):
-            try:
-                throttle = self._last_sample.throttle
-                brake = self._last_sample.brake
-                steering = self._last_sample.steering
+            throttle = self._last_sample.throttle
+            brake = self._last_sample.brake
+            steering = self._last_sample.steering
 
-                if pedals_session.is_open:
-                    latest = pedals_session.read_latest_report(
-                        report_len=self._settings_tab.pedals_report_len,
-                        max_reads=_MAX_READS_PER_TICK,
-                    )
-                    if latest:
-                        t_off = self._settings_tab.throttle_offset
-                        b_off = self._settings_tab.brake_offset
-                        if max(t_off, b_off) < len(latest):
-                            throttle = scale_axis(latest[t_off]) * 100
-                            brake = scale_axis(latest[b_off]) * 100
+            if pedals_session.is_open:
+                latest = self._read_device_report(
+                    pedals_session, report_len=self._settings_tab.pedals_report_len, name="Pedals"
+                )
+                if latest:
+                    t_off = self._settings_tab.throttle_offset
+                    b_off = self._settings_tab.brake_offset
+                    if max(t_off, b_off) < len(latest):
+                        throttle = scale_axis(latest[t_off]) * 100
+                        brake = scale_axis(latest[b_off]) * 100
 
-                if wheel_session.is_open:
-                    latest = wheel_session.read_latest_report(
-                        report_len=self._settings_tab.wheel_report_len,
-                        max_reads=_MAX_READS_PER_TICK,
-                    )
-                    if latest:
-                        s_off = self._settings_tab.steering_offset
-                        bits = self._settings_tab.steering_bits
-                        if bits == 32:
-                            # 32-bit signed little-endian steering (4 bytes)
-                            if s_off + 3 < len(latest):
-                                raw = latest[s_off] | (latest[s_off + 1] << 8) | (latest[s_off + 2] << 16) | (latest[s_off + 3] << 24)
-                                # Convert to signed
-                                raw_steering = raw if raw < 0x80000000 else raw - 0x100000000
-                                steering_raw = self._apply_steering_32bit(raw_steering)
-                                steering = self._smooth_steering(steering_raw, self._last_sample.steering)
-                        elif bits == 16:
-                            # 16-bit little-endian steering (2 bytes)
-                            if s_off + 1 < len(latest):
-                                raw_steering = latest[s_off] | (latest[s_off + 1] << 8)
-                                steering_raw = self._apply_steering_16bit(raw_steering)
-                                steering = self._smooth_steering(steering_raw, self._last_sample.steering)
-                        else:
-                            # 8-bit steering (1 byte)
-                            if s_off < len(latest):
-                                steering_raw = self._apply_steering(latest[s_off])
-                                steering = self._smooth_steering(steering_raw, self._last_sample.steering)
+            if wheel_session.is_open:
+                latest = self._read_device_report(
+                    wheel_session, report_len=self._settings_tab.wheel_report_len, name="Wheel"
+                )
+                if latest:
+                    s_off = self._settings_tab.steering_offset
+                    bits = self._settings_tab.steering_bits
+                    if bits == 32:
+                        # 32-bit signed little-endian steering (4 bytes)
+                        if s_off + 3 < len(latest):
+                            raw = latest[s_off] | (latest[s_off + 1] << 8) | (latest[s_off + 2] << 16) | (latest[s_off + 3] << 24)
+                            # Convert to signed
+                            raw_steering = raw if raw < 0x80000000 else raw - 0x100000000
+                            steering_raw = self._apply_steering_32bit(raw_steering)
+                            steering = self._smooth_steering(steering_raw, self._last_sample.steering)
+                    elif bits == 16:
+                        # 16-bit little-endian steering (2 bytes)
+                        if s_off + 1 < len(latest):
+                            raw_steering = latest[s_off] | (latest[s_off + 1] << 8)
+                            steering_raw = self._apply_steering_16bit(raw_steering)
+                            steering = self._smooth_steering(steering_raw, self._last_sample.steering)
+                    else:
+                        # 8-bit steering (1 byte)
+                        if s_off < len(latest):
+                            steering_raw = self._apply_steering(latest[s_off])
+                            steering = self._smooth_steering(steering_raw, self._last_sample.steering)
 
-                self._last_sample = TelemetrySample(throttle, brake, steering)
-                return self._last_sample
-            except OSError:
-                pass  # Fall through to simulated sample
+            self._last_sample = TelemetrySample(throttle, brake, steering)
+            return self._last_sample
 
         return self._generate_simulated_sample()
+
+    def _read_device_report(
+        self, session: HidSession, *, report_len: int, name: str
+    ) -> list[int] | None:
+        """Read the latest report, closing the session if the device was unplugged."""
+        try:
+            return session.read_latest_report(report_len=report_len, max_reads=_MAX_READS_PER_TICK)
+        except (OSError, ValueError):
+            session.close()
+            self._status_bar.showMessage(
+                f"{name} disconnected. Plug it back in and press Reconnect in Settings.", 10000
+            )
+            self._update_status()
+            return None
 
     def _generate_simulated_sample(self) -> TelemetrySample:
         """Generate simulated telemetry data for testing without hardware."""
@@ -513,7 +586,3 @@ class MainWindow(QMainWindow):
     # Cleanup
     # -------------------------------------------------------------------------
 
-    def closeEvent(self, event) -> None:
-        """Clean up resources when the window is closed."""
-        self._settings_tab.close_sessions()
-        super().closeEvent(event)

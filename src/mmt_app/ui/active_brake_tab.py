@@ -10,8 +10,6 @@ from PySide6.QtCharts import QChart, QLineSeries, QValueAxis
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QFormLayout,
     QLabel,
     QPushButton,
     QHBoxLayout,
@@ -39,6 +37,7 @@ _DEFAULT_TIMER_INTERVAL = 40
 _DEFAULT_GRID_STEP = 10
 _MIN_SPEED_HZ = 30
 _MAX_SPEED_HZ = 120
+_SCORE_MIN_PERCENT = 1.0  # Samples where target and brake are both below this are idle
 
 
 @dataclass
@@ -47,6 +46,8 @@ class _ActiveBrakeState:
     user_cursor: int
     target_points: list[QPointF]
     user_points: list[QPointF]
+    error_sum: float = 0.0  # Sum of |target - brake| at the midline
+    scored_samples: int = 0
 
 
 class ActiveBrakeTab(QWidget):
@@ -83,11 +84,20 @@ class ActiveBrakeTab(QWidget):
 
         self._start_btn = QPushButton("Start")
         self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._start_btn.setToolTip("Start / pause (Space)")
         self._start_btn.clicked.connect(self.toggle_running)
 
         self._reset_btn = QPushButton("Reset")
         self._reset_btn.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self._reset_btn.setToolTip("New targets and clear the score (R)")
         self._reset_btn.clicked.connect(self.reset)
+
+        self._score_label = QLabel()
+        self._score_label.setObjectName("scoreLabel")
+        self._score_label.setToolTip(
+            "How closely your brake matched the target at the center line:\n"
+            "100 minus the average difference in % points (idle time at 0% is ignored)."
+        )
 
         # Speed slider (30-120 Hz)
         self._speed_slider = QSlider(Qt.Horizontal)
@@ -109,6 +119,7 @@ class ActiveBrakeTab(QWidget):
             initial_speed = DEFAULT_ACTIVE_BRAKE_SPEED
         self._speed_slider.setValue(initial_speed)
         self._update_speed_label(initial_speed)
+        self.set_update_rate(initial_speed)  # setValue doesn't emit if the value is unchanged
 
         (
             self._chart,
@@ -126,6 +137,7 @@ class ActiveBrakeTab(QWidget):
         buttons.addWidget(self._start_btn)
         buttons.addWidget(self._reset_btn)
         buttons.addStretch()
+        buttons.addWidget(self._score_label)
 
         # Speed control row
         speed_row = QHBoxLayout()
@@ -201,11 +213,7 @@ class ActiveBrakeTab(QWidget):
     def toggle_running(self) -> None:
         """Toggle the training loop between running/paused states."""
         if self._state.running:
-            self._timer.stop()
-            self._state.running = False
-            self._start_btn.setText("Start")
-            self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-            self._status_label.setText("Paused. Press Start to continue.")
+            self.pause()
             return
 
         self._timer.start()
@@ -213,6 +221,21 @@ class ActiveBrakeTab(QWidget):
         self._start_btn.setText("Pause")
         self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
         self._status_label.setText("Match the red target as it crosses the center line.")
+
+    def pause(self) -> None:
+        """Pause the training loop (no-op if already paused)."""
+        if not self._state.running:
+            return
+        self._timer.stop()
+        self._state.running = False
+        self._start_btn.setText("Start")
+        self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self._status_label.setText("Paused. Press Start to continue.")
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        """Pause when the tab is left so the session doesn't keep running unattended."""
+        self.pause()
+        super().hideEvent(event)
 
     def reset(self) -> None:
         """Reset target/user traces and put the tab into a ready state."""
@@ -227,6 +250,7 @@ class ActiveBrakeTab(QWidget):
         self._render_user()
         self._render_midline()
         self._set_watermark_percent(0)
+        self._update_score_label()
         self._start_btn.setText("Start")
         self._start_btn.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self._status_label.setText("Reset. Press Start when ready.")
@@ -269,13 +293,31 @@ class ActiveBrakeTab(QWidget):
         self._state.target_points = shifted
         self._render_target()
 
-    def _record_user(self) -> None:
-        """Append the latest brake reading at the midline."""
-        brake = self._clamp_y(float(self._read_brake_percent()))
+    def _record_user(self, brake: float) -> None:
+        """Append the latest brake reading at the midline and score it."""
         self._state.user_points.append(QPointF(self._mid_x, brake))
         self._state.user_cursor += 1
         self._render_user()
-        self._set_watermark_percent(brake)
+        self._score_sample(brake)
+
+    def _score_sample(self, brake: float) -> None:
+        """Accumulate the error between the brake and the target at the midline."""
+        if not self._state.target_points:
+            return
+        target = min(self._state.target_points, key=lambda p: abs(p.x() - self._mid_x)).y()
+        if target < _SCORE_MIN_PERCENT and brake < _SCORE_MIN_PERCENT:
+            return  # Both at rest: nothing to score.
+        self._state.error_sum += abs(target - brake)
+        self._state.scored_samples += 1
+        self._update_score_label()
+
+    def _update_score_label(self) -> None:
+        """Show the session accuracy (100 - mean absolute error)."""
+        if self._state.scored_samples == 0:
+            self._score_label.setText("Accuracy: --")
+            return
+        accuracy = max(0.0, 100.0 - self._state.error_sum / self._state.scored_samples)
+        self._score_label.setText(f"Accuracy: {accuracy:.0f}%")
 
     def _advance_user_points(self) -> None:
         """Scroll user points left with the target to create the trailing trace."""
@@ -302,11 +344,11 @@ class ActiveBrakeTab(QWidget):
         peak = random.uniform(55.0, 100.0)
         if pattern == "spike":
             raw = self._shape_spike(length, peak)
-        if pattern == "double_peak":
+        elif pattern == "double_peak":
             raw = self._shape_double_peak(length, peak)
-        if pattern == "hill":
+        elif pattern == "hill":
             raw = self._shape_hill(length, peak)
-        if pattern == "trail_brake":
+        elif pattern == "trail_brake":
             raw = self._shape_trail_brake(length, peak)
         else:
             raw = self._shape_ramp_hold_drop(length, peak)
@@ -381,11 +423,12 @@ class ActiveBrakeTab(QWidget):
 
     def _on_tick(self) -> None:
         """Advance target and, when running, record and scroll user points."""
-        self._set_watermark_percent(self._clamp_y(float(self._read_brake_percent())))
+        brake = self._clamp_y(float(self._read_brake_percent()))
+        self._set_watermark_percent(brake)
         self._advance_target()
         if self._state.running:
             self._advance_user_points()
-            self._record_user()
+            self._record_user(brake)
 
     def _clamp_y(self, value: float) -> float:
         """Clamp a value to the visible Y range."""

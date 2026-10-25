@@ -85,9 +85,10 @@ class PedalsCalibrationWizard(QDialog):
         self._check_for_preset()
 
         # Calibration state
+        self._closed = False
         self._calibration_phase: str | None = None
-        self._baseline_samples: list[bytes] = []
-        self._active_samples: list[bytes] = []
+        self._baseline_samples: list[list[int]] = []
+        self._active_samples: list[list[int]] = []
         self._current_axis: str | None = None
 
         self._setup_timers()
@@ -147,6 +148,7 @@ class PedalsCalibrationWizard(QDialog):
             brake_score=1000.0,
         )
 
+        self._closed = True  # Stop the pending auto-detection steps.
         self._on_complete(result)
         self._on_status_update(
             f"Using preset for {self._preset.name}: "
@@ -314,6 +316,8 @@ class PedalsCalibrationWizard(QDialog):
 
     def _detect_report_length(self) -> None:
         """Auto-detect report length."""
+        if self._closed:
+            return
         if not self._pedals_session.is_open:
             self._instruction_label.setText("❌ Error: Pedals not connected!")
             self._detail_label.setText("Please connect your pedals device first.")
@@ -385,7 +389,7 @@ class PedalsCalibrationWizard(QDialog):
         self._active_samples = []
         self._set_progress_style("baseline")
 
-        axis_name = self._current_axis.upper()
+        axis_name = self._current_axis.upper() if self._current_axis else "UNKNOWN"
         self._instruction_label.setText(f"📊 Phase 1 of 2: Baseline Capture")
         self._detail_label.setText(
             f"Keep {axis_name} pedal FULLY RELEASED.\n"
@@ -402,9 +406,12 @@ class PedalsCalibrationWizard(QDialog):
 
     def _switch_to_active_capture(self) -> None:
         """Switch from baseline to active capture."""
+        if self._closed:
+            return
         self._calibration_phase = "active"
         self._set_progress_style("active")
 
+        assert self._current_axis is not None
         axis_name = self._current_axis.upper()
         self._instruction_label.setText(f"📊 Phase 2 of 2: Active Capture")
         self._detail_label.setText(
@@ -418,11 +425,13 @@ class PedalsCalibrationWizard(QDialog):
 
     def _finish_axis_detection(self) -> None:
         """Complete axis detection and compute offset."""
+        if self._closed:
+            return
         self._calibration_timer.stop()
         self._calibration_phase = None
 
         if not self._baseline_samples or not self._active_samples:
-            self._instruction_label.setText(f"⚠ {self._current_axis.capitalize()} detection failed")
+            self._instruction_label.setText(f"⚠ {(self._current_axis or 'unknown').capitalize()} detection failed")
             self._detail_label.setText("Not enough data captured. Please try again.")
             self._next_btn.setEnabled(True)
             self._next_btn.setText("Retry")
@@ -452,6 +461,7 @@ class PedalsCalibrationWizard(QDialog):
             confidence = "Low"
             color = "#f97316"
 
+        assert self._current_axis is not None
         self._instruction_label.setText(
             f"✓ {self._current_axis.capitalize()} detected at byte {offset}"
         )
@@ -469,8 +479,6 @@ class PedalsCalibrationWizard(QDialog):
         self._next_btn.setText("Next")
         self._next_btn.clicked.disconnect()
         self._next_btn.clicked.connect(self._advance)
-
-        QTimer.singleShot(2000, lambda: None)  # Show result for 2 seconds
 
     def _capture_calibration_sample(self) -> None:
         """Capture a sample during calibration."""
@@ -553,18 +561,25 @@ class PedalsCalibrationWizard(QDialog):
 
     def _advance(self) -> None:
         """Advance to the next wizard step."""
+        if self._closed:
+            return
         self._current_step += 1
         self._run_current_step()
 
     def _finish(self) -> None:
         """Complete the wizard."""
+        self._closed = True
         self._calibration_timer.stop()
         self._on_complete(self._result)
         self._on_status_update("Pedals calibration complete! Settings saved.")
-        self.close()
+        # accept() (not close()) so the rejected -> _cancel path doesn't report a cancel.
+        self.accept()
 
     def _cancel(self) -> None:
         """Cancel the wizard."""
+        if self._closed:
+            return
+        self._closed = True
         self._calibration_timer.stop()
         self._on_status_update("Pedals calibration canceled.")
         self.close()

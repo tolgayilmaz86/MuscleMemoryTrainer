@@ -12,6 +12,7 @@ from mmt_app.config import (
     DEFAULT_THRESHOLD_SPEED,
 )
 from mmt_app.ui.threshold_training_tab import (
+    HIT_TOLERANCE,
     FloatingTarget,
     StepBasedTargetGenerator,
     ThresholdTrainingState,
@@ -197,3 +198,25 @@ class TestThresholdTrainingConfig:
 
         assert loaded_config.step == 5  # Clamped to min
         assert loaded_config.speed == 10  # Clamped to max
+
+
+class TestHitScoring:
+    """Tests for hit/miss judgement and streak tracking."""
+
+    def test_new_target_is_pending(self) -> None:
+        assert FloatingTarget(x=100.0, value=40).result is None
+
+    def test_matches_within_tolerance(self) -> None:
+        target = FloatingTarget(x=10.0, value=40)
+        assert target.matches(40.0)
+        assert target.matches(40.0 + HIT_TOLERANCE)
+        assert target.matches(40.0 - HIT_TOLERANCE)
+        assert not target.matches(40.0 + HIT_TOLERANCE + 0.1)
+
+    def test_record_result_tracks_streaks(self) -> None:
+        state = ThresholdTrainingState()
+        for hit in (True, True, True, False, True):
+            state.record_result(hit)
+        assert (state.hits, state.misses) == (4, 1)
+        assert state.streak == 1
+        assert state.best_streak == 3

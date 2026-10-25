@@ -1,5 +1,3 @@
-import sys
-
 # Use absolute import so it works when frozen as a script entrypoint.
 from mmt_app.app import create_application, create_main_window
 

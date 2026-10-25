@@ -209,6 +209,8 @@ class AxisCalibrator:
             return
 
         # Append to correct sample list
+        if isinstance(report, list):
+            report = bytes(report)
         if session.phase == "active":
             session.active_samples.append(report)
             sample_count = len(session.active_samples)

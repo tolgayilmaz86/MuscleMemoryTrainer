@@ -4,5 +4,7 @@
     "python.terminal.activateEnvInCurrentTerminal": true,
     "python.analysis.extraPaths": [
       "${workspaceFolder}/src"
-    ]
+    ],
+    "python.analysis.typeCheckingMode": "basic",
+    "python-envs.pythonProjects": []
   }

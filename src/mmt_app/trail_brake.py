@@ -16,7 +16,7 @@ import math
 import random
 from dataclasses import dataclass
 from math import exp
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 # ============================================================================
 # Constants
@@ -582,3 +582,27 @@ def presets() -> Dict[str, BrakeTrace]:
             _clamp_points(plateau, force_end_zero=True)
         ),
     }
+
+
+def trace_accuracy(target: Sequence[float], actual: Sequence[float]) -> float:
+    """Score how closely an attempt followed a target trace.
+
+    The score is 100 minus the mean absolute error (in percentage points),
+    computed only over steps where either trace is above 0%. Idle time at
+    rest therefore neither inflates nor penalizes the result.
+
+    Args:
+        target: Target brake percentages (0-100) per step.
+        actual: Recorded brake percentages (0-100) per step.
+
+    Returns:
+        Accuracy in range [0.0, 100.0]; 0.0 when there is nothing to compare.
+
+    Example:
+        >>> trace_accuracy([0, 50, 100, 0], [0, 40, 90, 0])
+        90.0
+    """
+    errors = [abs(t - a) for t, a in zip(target, actual) if t > 0 or a > 0]
+    if not errors:
+        return 0.0
+    return max(0.0, 100.0 - sum(errors) / len(errors))

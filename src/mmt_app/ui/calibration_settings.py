@@ -29,7 +29,6 @@ from mmt_app.config import (
     DEFAULT_BRAKE_OFFSET,
     DEFAULT_STEERING_OFFSET,
     DEFAULT_STEERING_RANGE,
-    DEFAULT_STEERING_BITS,
 )
 
 
@@ -50,6 +49,7 @@ class CalibrationSettingsGroup(QGroupBox):
         on_calibrate_pedals: Callable[[], None] | None = None,
         on_calibrate_steering: Callable[[], None] | None = None,
         on_steering_range_changed: Callable[[int], None] | None = None,
+        on_advanced_changed: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the calibration settings group.
 
@@ -58,12 +58,14 @@ class CalibrationSettingsGroup(QGroupBox):
             on_calibrate_pedals: Callback when calibrate pedals button clicked.
             on_calibrate_steering: Callback when calibrate steering button clicked.
             on_steering_range_changed: Callback when steering range slider changes.
+            on_advanced_changed: Callback when any advanced setting is edited.
         """
         super().__init__("Calibration", parent)
 
         self._on_calibrate_pedals = on_calibrate_pedals or (lambda: None)
         self._on_calibrate_steering = on_calibrate_steering or (lambda: None)
         self._on_steering_range_changed = on_steering_range_changed or (lambda _: None)
+        self._on_advanced_changed = on_advanced_changed or (lambda: None)
 
         self._build_ui()
 
@@ -265,6 +267,16 @@ class CalibrationSettingsGroup(QGroupBox):
             "Most wheels use 16-bit. VNM and some direct drive wheels use 32-bit signed."
         )
         form.addRow("Steering format:", self._steering_bits)
+
+        for spin in (
+            self._pedals_report_len,
+            self._wheel_report_len,
+            self._throttle_offset,
+            self._brake_offset,
+            self._steering_offset,
+        ):
+            spin.valueChanged.connect(lambda _: self._on_advanced_changed())
+        self._steering_bits.currentIndexChanged.connect(lambda _: self._on_advanced_changed())
 
         return widget
 
