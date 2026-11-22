@@ -467,3 +467,27 @@ class TestUiConfigWindowState:
         assert loaded is not None
         assert loaded.brake_target == 55
         assert (loaded.window_width, loaded.window_height, loaded.last_tab) == (1400, 900, 2)
+
+
+class TestAtomicWrites:
+    """A failed save must leave the previous config.ini intact."""
+
+    def test_interrupted_save_keeps_old_file(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        config.save_ui_config(config.UiConfig(throttle_target=90, brake_target=70, grid_step_percent=20))
+
+        def crash(src, dst):
+            raise OSError("simulated crash before rename")
+
+        monkeypatch.setattr(config.os, "replace", crash)
+        with pytest.raises(OSError):
+            config.save_ui_config(config.UiConfig(throttle_target=10, brake_target=10, grid_step_percent=10))
+
+        loaded = config.load_ui_config()
+        assert loaded is not None and (loaded.throttle_target, loaded.brake_target) == (90, 70)
+
+    def test_custom_traces_written_atomically(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        config.save_custom_traces({"A": [0, 50, 0]})
+        assert config.load_custom_traces() == {"A": [0, 50, 0]}
+        assert not list(tmp_path.glob("*.tmp"))

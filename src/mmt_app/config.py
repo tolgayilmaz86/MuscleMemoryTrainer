@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import configparser
+import io
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -123,6 +125,20 @@ def config_path() -> Path:
     return config_dir / "config.ini"
 
 
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write a file via a temp file + rename, so a crash never leaves it truncated."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def write_config(parser: configparser.ConfigParser) -> None:
+    """Atomically write `parser` to config.ini."""
+    buffer = io.StringIO()
+    parser.write(buffer)
+    _atomic_write_text(config_path(), buffer.getvalue())
+
+
 def ensure_config_exists() -> None:
     """Create config.ini with all default values if it doesn't exist."""
     path = config_path()
@@ -188,8 +204,7 @@ def ensure_config_exists() -> None:
         "speed": str(DEFAULT_THRESHOLD_SPEED),
     }
 
-    with path.open("w", encoding="utf-8") as f:
-        parser.write(f)
+    write_config(parser)
 
 
 def _load_device_section(parser: configparser.ConfigParser, section_name: str) -> Optional[dict]:
@@ -295,9 +310,7 @@ def save_pedals_config(cfg: PedalsConfig) -> None:
         "throttle_offset": str(cfg.throttle_offset),
         "brake_offset": str(cfg.brake_offset),
     }
-    path = config_path()
-    with path.open("w", encoding="utf-8") as f:
-        parser.write(f)
+    write_config(parser)
 
 
 def save_wheel_config(cfg: WheelConfig) -> None:
@@ -314,9 +327,7 @@ def save_wheel_config(cfg: WheelConfig) -> None:
         "steering_half_range": str(int(cfg.steering_half_range)),
         "steering_bits": str(int(cfg.steering_bits)),
     }
-    path = config_path()
-    with path.open("w", encoding="utf-8") as f:
-        parser.write(f)
+    write_config(parser)
 
 
 def save_input_profile(profile: InputProfile) -> None:
@@ -377,9 +388,7 @@ def save_ui_config(cfg: UiConfig) -> None:
         "last_tab": str(int(cfg.last_tab)),
         "always_on_top": "true" if bool(cfg.always_on_top) else "false",
     }
-    path = config_path()
-    with path.open("w", encoding="utf-8") as f:
-        parser.write(f)
+    write_config(parser)
 
 
 def load_trail_brake_config() -> Optional[TrailBrakeConfig]:
@@ -401,9 +410,7 @@ def save_trail_brake_config(cfg: TrailBrakeConfig) -> None:
     parser = configparser.ConfigParser()
     parser.read(config_path(), encoding="utf-8")
     parser["trail_brake"] = {"selected_trace": cfg.selected_trace}
-    path = config_path()
-    with path.open("w", encoding="utf-8") as f:
-        parser.write(f)
+    write_config(parser)
 
 
 def custom_traces_path() -> Path:
@@ -435,8 +442,7 @@ def load_custom_traces() -> dict[str, list[int]]:
 
 def save_custom_traces(traces: dict[str, list[int]]) -> None:
     """Persist custom brake traces (name -> points) as JSON."""
-    path = custom_traces_path()
-    path.write_text(json.dumps(traces, indent=2), encoding="utf-8")
+    _atomic_write_text(custom_traces_path(), json.dumps(traces, indent=2))
 
 
 def load_active_brake_config() -> ActiveBrakeConfig:
@@ -455,9 +461,7 @@ def save_active_brake_config(cfg: ActiveBrakeConfig) -> None:
     parser = configparser.ConfigParser()
     parser.read(config_path(), encoding="utf-8")
     parser["active_brake"] = {"speed": str(int(cfg.speed))}
-    path = config_path()
-    with path.open("w", encoding="utf-8") as f:
-        parser.write(f)
+    write_config(parser)
 
 
 def load_threshold_training_config() -> ThresholdTrainingConfig:
@@ -486,6 +490,4 @@ def save_threshold_training_config(cfg: ThresholdTrainingConfig) -> None:
         "step": str(int(cfg.step)),
         "speed": str(int(cfg.speed)),
     }
-    path = config_path()
-    with path.open("w", encoding="utf-8") as f:
-        parser.write(f)
+    write_config(parser)

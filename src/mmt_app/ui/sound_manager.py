@@ -36,10 +36,10 @@ class SoundManager:
         self._sound_paths: dict[str, str] = {}
         self._sound_enabled: dict[str, bool] = {}
 
-        # Media player setup
-        self._media_player = QMediaPlayer()
-        self._audio_output = QAudioOutput()
-        self._media_player.setAudioOutput(self._audio_output)
+        # One player per sound kind (so a brake beep doesn't cut off a throttle beep),
+        # created on first use; each keeps its file loaded between plays.
+        self._players: dict[str, tuple[QMediaPlayer, QAudioOutput]] = {}
+        self._loaded: dict[str, Path] = {}
 
     @property
     def default_sound_path(self) -> Path:
@@ -138,12 +138,26 @@ class SoundManager:
             return
 
         try:
-            self._media_player.stop()
-            self._media_player.setSource(QUrl.fromLocalFile(str(path)))
-            self._audio_output.setVolume(1.0)
-            self._media_player.play()
+            player = self._player(kind)
+            if self._loaded.get(kind) != path:
+                # Loading (open + probe) only happens when the file changes, not per beep.
+                player.setSource(QUrl.fromLocalFile(str(path)))
+                self._loaded[kind] = path
+            else:
+                player.setPosition(0)
+            player.play()
         except Exception:
             pass  # Silently fail on playback errors
+
+    def _player(self, kind: str) -> QMediaPlayer:
+        """Return the media player for a sound kind, creating it on first use."""
+        if kind not in self._players:
+            player = QMediaPlayer()
+            output = QAudioOutput()
+            output.setVolume(1.0)
+            player.setAudioOutput(output)
+            self._players[kind] = (player, output)
+        return self._players[kind][0]
 
     def apply_settings(
         self,

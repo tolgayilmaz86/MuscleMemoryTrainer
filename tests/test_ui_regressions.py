@@ -309,3 +309,96 @@ class TestAlwaysOnTop:
         assert reopened._pin_button.isChecked()
         assert reopened._settings_tab.always_on_top
         reopened.close()
+
+
+# ============================================================================
+# Bugs found in the performance & bug review
+# ============================================================================
+
+
+class TestSteeringSmoothing:
+    """The steering filter must follow the wheel, not freeze after a jump."""
+
+    @staticmethod
+    def _window(monkeypatch):
+        from mmt_app.input import hid_backend
+        from mmt_app.ui.main_window import MainWindow
+
+        monkeypatch.setattr(hid_backend, "hid", None)
+        return MainWindow(app_name="MMT", version="test")
+
+    def test_wheel_already_turned_is_followed(self, qapp, tmp_config, monkeypatch) -> None:
+        window = self._window(monkeypatch)
+        value = 0.0
+        for _ in range(60):  # 1 s at 60 Hz with the wheel held at +60%
+            value = window._smooth_steering(60.0, value)
+        assert value == pytest.approx(60.0, abs=0.5)
+        window.close()
+
+    def test_fast_flick_reaches_full_lock(self, qapp, tmp_config, monkeypatch) -> None:
+        window = self._window(monkeypatch)
+        value = 0.0
+        for i in range(60):
+            value = window._smooth_steering(min(100.0, i * 11.0), value)
+        assert value == pytest.approx(100.0, abs=0.5)
+        window.close()
+
+
+class TestTrailBrakeStaysArmed:
+    """Changing the trace while auto-recording keeps recording on the new trace."""
+
+    @pytest.mark.parametrize("action", ["length", "regenerate", "preset"])
+    def test_trace_change_rearms(self, qapp, tmp_config, action) -> None:
+        from mmt_app.ui.trail_brake_tab import TrailBrakeTab
+
+        tab = TrailBrakeTab(read_brake_percent=lambda: 0.0)
+        tab.toggle_recording()
+        if action == "length":
+            tab._length_slider.setValue(220)
+        elif action == "regenerate":
+            tab._regen_btn.click()
+        else:
+            tab._trace_combo.setCurrentIndex(1)
+        assert tab._loop_active
+        assert tab._timer.isActive()
+        assert tab._state.recording
+
+    def test_stopping_still_stops(self, qapp, tmp_config) -> None:
+        from mmt_app.ui.trail_brake_tab import TrailBrakeTab
+
+        tab = TrailBrakeTab(read_brake_percent=lambda: 0.0)
+        tab.toggle_recording()
+        tab.toggle_recording()
+        tab._regen_btn.click()
+        assert not tab._timer.isActive()
+        assert tab._start_btn.text() == "Start auto"
+
+
+class TestTargetSounds:
+    def test_each_kind_has_its_own_player(self, qapp) -> None:
+        from mmt_app.ui.sound_manager import SoundManager
+
+        manager = SoundManager()
+        assert manager._player("throttle") is not manager._player("brake")
+        assert manager._player("brake") is manager._player("brake")
+
+    def test_file_is_loaded_once(self, qapp) -> None:
+        from mmt_app.ui.sound_manager import SoundManager
+
+        manager = SoundManager()
+        manager.preview("brake")
+        source = manager._player("brake").source()
+        manager.preview("brake")
+        assert manager._player("brake").source() == source
+        assert manager._loaded["brake"] == manager.resolve_path("brake")
+
+
+class TestVerticalLevelBar:
+    def test_value_is_clamped(self, qapp) -> None:
+        from mmt_app.ui.telemetry_tab import VerticalLevelBar
+
+        bar = VerticalLevelBar("#16a34a", "#22c55e")
+        bar.set_value(150)
+        assert bar.value() == 100
+        bar.set_value(-5)
+        assert bar.value() == 0

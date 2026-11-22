@@ -426,10 +426,7 @@ class TrailBrakeTab(QWidget):
         else:
             message = f"{message} {self._record_score()}"
         if regen and self._auto_regen_checkbox.isChecked() and self._is_random_selected():
-            self._regenerate_random_trace(
-                status_text=f"{message} New random target ready.",
-                auto_restart=self._loop_active,
-            )
+            self._regenerate_random_trace(status_text=f"{message} New random target ready.")
             return
         self._state = _TrailBrakeState(
             trace=self._state.trace,
@@ -475,18 +472,18 @@ class TrailBrakeTab(QWidget):
         """Read and clamp the current brake percentage value."""
         return clamp_int(int(round(float(self._read_brake_percent()))), 0, AXIS_MAX)
 
-    def _regenerate_random_trace(self, status_text: Optional[str] = None, *, auto_restart: bool = False) -> None:
+    def _regenerate_random_trace(self, status_text: Optional[str] = None) -> None:
         self._ensure_random_selected()
         length = self._random_length()
         self._generated_trace = random_trace(length)
-        status_text = status_text or "Random target regenerated."
-        self._apply_trace(self._generated_trace, status_text=status_text)
+        self._apply_trace(self._generated_trace, status_text=status_text or "Random target regenerated.")
         self._save_selection()
-        if auto_restart and self._loop_active:
-            self._begin_attempt(status=f"{status_text} Auto-recording armed.")
 
     def _apply_trace(self, trace: BrakeTrace, *, status_text: Optional[str] = None) -> None:
-        """Apply a trace to the chart and reset state."""
+        """Apply a trace to the chart and reset state.
+
+        If auto-recording is on, the next attempt is armed on the new trace.
+        """
         normalized = self._normalize_trace(trace, force_end_zero=self._is_random_selected())
         length = len(normalized.points)
         self._timer.stop()
@@ -503,7 +500,9 @@ class TrailBrakeTab(QWidget):
         self._set_start_button_text()
         self._sync_trace_controls()
         self._set_watermark_percent(0)
-        if status_text:
+        if self._loop_active:
+            self._begin_attempt(status=f"{status_text or 'Trace changed.'} Auto-recording armed.")
+        elif status_text:
             self._status_label.setText(status_text)
 
     def _random_length(self) -> int:

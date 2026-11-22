@@ -70,6 +70,7 @@ class Controller:
         self.axes: list[AxisField] = []
         self.axes_guessed = False
         self._handle = None
+        self._descriptor_read = False
         self._numbered = False
         self._reports: dict[int, list[int]] = {}
 
@@ -83,13 +84,19 @@ class Controller:
             raise RuntimeError("hidapi is not installed")
         handle = hid_backend.hid.device()
         handle.open_path(self.info.path)
-        handle.set_nonblocking(True)
-        self._handle = handle
         try:
-            descriptor = handle.get_report_descriptor()
-        except (OSError, ValueError, AttributeError):
-            descriptor = []
-        self.axes = parse_input_axes(descriptor)
+            handle.set_nonblocking(True)
+        except Exception:
+            handle.close()
+            raise
+        try:
+            descriptor = bytes(handle.get_report_descriptor())
+            axes = parse_input_axes(descriptor)
+        except Exception:  # Unreadable or malformed descriptor: axes are guessed later.
+            descriptor, axes = b"", []
+        self._handle = handle
+        self._descriptor_read = bool(descriptor)
+        self.axes = axes
         self._numbered = any(axis.report_id for axis in self.axes)
 
     def close(self) -> None:
@@ -114,8 +121,10 @@ class Controller:
             if not data:
                 break
             self._reports[data[0] if self._numbered else 0] = list(data)
-        if not self.axes and self._reports:
-            # No usable descriptor: offer every byte / byte pair as a candidate axis.
+        if not self.axes and not self._descriptor_read and self._reports:
+            # No descriptor: offer every byte / byte pair as a candidate axis. (A device
+            # whose descriptor simply has no axes, e.g. a shifter, must not get guesses:
+            # its buttons would otherwise look like pedals during detection.)
             self.axes = guess_axes(max(len(r) for r in self._reports.values()))
             self.axes_guessed = True
 
@@ -147,7 +156,15 @@ class InputHub:
 
     def refresh(self) -> None:
         """Open newly connected controllers and forget unplugged ones (blocking)."""
-        self._apply(self._enumerate())
+        # hidapi must not enumerate on two threads at once: let a background
+        # enumeration finish, then run this one on the same single worker.
+        if self._pending is not None:
+            future, self._pending = self._pending, None
+            try:
+                future.result()  # Superseded by the fresh enumeration below.
+            except Exception:
+                pass
+        self._apply(_enumerate_worker.submit(self._enumerate).result())
 
     def start_background_refresh(self) -> None:
         """Enumerate devices on a worker thread; apply later with `finish_background_refresh`."""

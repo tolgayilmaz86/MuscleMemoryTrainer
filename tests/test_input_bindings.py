@@ -235,3 +235,134 @@ class TestBindingPersistence:
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
         (tmp_path / "config.ini").write_text("[binding.brake]\nvendor_id = nope\n", encoding="utf-8")
         assert load_bindings() == {}
+
+
+class TestPedalCalibration:
+    """The released position must be the real rest, not a mid-release sample."""
+
+    def test_rest_is_true_rest_after_realistic_release(self) -> None:
+        pedals = FakeController("mBooster Pedals", 0x346E, 0x0008, [RZ])
+        detector = AxisDetector("brake")
+        # Rest 300, press over 15 samples, release over 9 (60 Hz): completion fires mid-release.
+        path = ([300] * 5 + [300 + 59700 * i // 15 for i in range(16)]
+                + [60000 - 59700 * i // 9 for i in range(10)] + [300] * 5)
+        binding = None
+        for raw in path:
+            pedals.values[RZ] = raw
+            detector.update([pedals])
+            binding = detector.result()
+            if binding:
+                break
+        assert binding is not None
+        assert binding.rest == 300
+        assert binding.pedal_percent(300 + 59700 * 10 // 100) == pytest.approx(8.3, abs=0.5)
+
+    def test_inverted_rest_uses_highest_value(self) -> None:
+        pedals = FakeController("Inverted", 1, 2, [RX])
+        detector = AxisDetector("throttle")
+        path = [65000] * 4 + [60000, 40000, 20000, 5000, 20000, 40000, 50000] + [65000] * 3
+        binding = None
+        for raw in path:
+            pedals.values[RX] = raw
+            detector.update([pedals])
+            binding = detector.result() or binding
+            if binding:
+                break
+        assert binding is not None and binding.rest == 65000 and binding.full == 5000
+
+
+# ============================================================================
+# Controller opening and hub enumeration (with a fake hidapi module)
+# ============================================================================
+
+BUTTONS_ONLY_DESCRIPTOR = bytes([
+    0x05, 0x01, 0x09, 0x04, 0xA1, 0x01,                    # Joystick
+    0x05, 0x09, 0x19, 0x01, 0x29, 0x10,                    # Buttons 1..16
+    0x15, 0x00, 0x25, 0x01, 0x75, 0x01, 0x95, 0x10, 0x81, 0x02,
+    0xC0,
+])
+
+
+class _FakeHandle:
+    def __init__(self, descriptor=b"", reports=(), fail_nonblocking=False, fail_descriptor=False):
+        self.descriptor = descriptor
+        self.reports = list(reports)
+        self.fail_nonblocking = fail_nonblocking
+        self.fail_descriptor = fail_descriptor
+        self.closed = False
+
+    def open_path(self, path):
+        pass
+
+    def set_nonblocking(self, flag):
+        if self.fail_nonblocking:
+            raise OSError("set_nonblocking failed")
+
+    def get_report_descriptor(self):
+        if self.fail_descriptor:
+            raise OSError("no descriptor")
+        return list(self.descriptor)
+
+    def read(self, size, timeout_ms=0):
+        return self.reports.pop(0) if self.reports else []
+
+    def close(self):
+        self.closed = True
+
+
+class TestControllerOpen:
+    @staticmethod
+    def _controller(monkeypatch, handle):
+        import types
+
+        from mmt_app.input import hid_backend
+        from mmt_app.input.controllers import Controller
+
+        monkeypatch.setattr(hid_backend, "hid", types.SimpleNamespace(device=lambda: handle))
+        return Controller(ControllerInfo(1, 2, "Shifter", b"path"))
+
+    def test_buttons_only_device_gets_no_guessed_axes(self, monkeypatch) -> None:
+        handle = _FakeHandle(BUTTONS_ONLY_DESCRIPTOR, reports=[[0x01, 0x40], [0x00, 0x00]])
+        controller = self._controller(monkeypatch, handle)
+        controller.open()
+        controller.poll()
+        assert controller.axes == []
+        assert not controller.axes_guessed
+
+    def test_unreadable_descriptor_falls_back_to_guessing(self, monkeypatch) -> None:
+        handle = _FakeHandle(fail_descriptor=True, reports=[[0x00, 0x10, 0x20]])
+        controller = self._controller(monkeypatch, handle)
+        controller.open()
+        controller.poll()
+        assert controller.axes_guessed and controller.axes
+
+    def test_failed_open_closes_the_handle(self, monkeypatch) -> None:
+        handle = _FakeHandle(BUTTONS_ONLY_DESCRIPTOR, fail_nonblocking=True)
+        controller = self._controller(monkeypatch, handle)
+        with pytest.raises(OSError):
+            controller.open()
+        assert handle.closed and not controller.is_open
+
+
+def test_refresh_never_overlaps_a_background_enumeration() -> None:
+    import threading
+    import time
+
+    lock = threading.Lock()
+    active = {"now": 0, "max": 0}
+
+    def slow_enumerate():
+        with lock:
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+        time.sleep(0.1)
+        with lock:
+            active["now"] -= 1
+        return []
+
+    hub = InputHub(enumerate_fn=slow_enumerate)
+    hub.start_background_refresh()
+    time.sleep(0.02)  # Background enumeration is now in flight
+    hub.refresh()
+    assert active["max"] == 1
+    assert not hub.finish_background_refresh()  # The pending one was consumed

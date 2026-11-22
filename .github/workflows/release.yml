@@ -1,14 +1,17 @@
 name: Build and Release
 
+# Push to master: test + build, and if __version__ (src/mmt_app/__init__.py) has no
+# matching "v<version>" tag yet, publish a release (the tag is created automatically).
+# Pushing a v* tag yourself still releases that tag.
 on:
   push:
     branches:
-      - main
+      - master
     tags:
       - 'v*'
   pull_request:
     branches:
-      - main
+      - master
 
 jobs:
   test-and-build:
@@ -32,8 +35,24 @@ jobs:
           pip install .[dev]
 
       - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: |
           pytest tests/
+
+      - name: Determine release version
+        id: version
+        shell: bash
+        run: |
+          version=$(python -c "import re, pathlib; print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', pathlib.Path('src/mmt_app/__init__.py').read_text()).group(1))")
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v$version already exists; no new release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag v$version is new; this push will be released."
+          fi
 
       - name: Build executable
         run: |
@@ -41,8 +60,12 @@ jobs:
 
       - name: Create Release and Upload Asset
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: >-
+          startsWith(github.ref, 'refs/tags/') ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/master' && steps.version.outputs.exists == 'false')
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: dist/MuscleMemoryTrainer.exe
           generate_release_notes: true
           draft: false

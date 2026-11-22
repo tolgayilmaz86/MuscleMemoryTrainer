@@ -91,6 +91,7 @@ class _Track:
         value = field.normalized(raw)
         self.start = self.last = self.low = self.high = value
         self.start_raw = self.last_raw = self.extreme_raw = raw
+        self.low_raw = self.high_raw = raw
         self.variation = 0.0
         self.samples = 1
 
@@ -99,6 +100,7 @@ class _Track:
         self.variation += abs(value - self.last)
         self.last, self.last_raw = value, raw
         self.low, self.high = min(self.low, value), max(self.high, value)
+        self.low_raw, self.high_raw = min(self.low_raw, raw), max(self.high_raw, raw)
         if abs(raw - self.start_raw) > abs(self.extreme_raw - self.start_raw):
             self.extreme_raw = raw
         self.samples += 1
@@ -181,7 +183,9 @@ class AxisDetector:
             return None  # Still pressed / turned.
         field = track.field
         if _is_pedal(self.role):
-            rest = track.last_raw
+            # Detection completes while the pedal is still coming back up, so the last
+            # sample isn't the released position; use the far end of what was seen.
+            rest = track.low_raw if track.extreme_raw >= track.start_raw else track.high_raw
         elif field.usage_page:
             rest = round((field.logical_min + field.logical_max) / 2)
         else:
@@ -326,5 +330,4 @@ def save_binding(role: str, binding: AxisBinding | None) -> None:
             "rest": str(binding.rest),
             "full": str(binding.full),
         }
-    with app_config.config_path().open("w", encoding="utf-8") as f:
-        parser.write(f)
+    app_config.write_config(parser)
