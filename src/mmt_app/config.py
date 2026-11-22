@@ -58,6 +58,7 @@ class UiConfig:
     window_width: int = 1080
     window_height: int = 600
     last_tab: int = 0
+    always_on_top: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,6 +169,7 @@ def ensure_config_exists() -> None:
         "window_width": str(DEFAULT_WINDOW_WIDTH),
         "window_height": str(DEFAULT_WINDOW_HEIGHT),
         "last_tab": "0",
+        "always_on_top": "false",
     }
 
     # Trail Brake section
@@ -350,6 +352,7 @@ def load_ui_config() -> Optional[UiConfig]:
             window_width=int(section.get("window_width", "1080")),
             window_height=int(section.get("window_height", "600")),
             last_tab=int(section.get("last_tab", "0")),
+            always_on_top=section.getboolean("always_on_top", fallback=False),
         )
     except Exception:
         return None
@@ -372,6 +375,7 @@ def save_ui_config(cfg: UiConfig) -> None:
         "window_width": str(int(cfg.window_width)),
         "window_height": str(int(cfg.window_height)),
         "last_tab": str(int(cfg.last_tab)),
+        "always_on_top": "true" if bool(cfg.always_on_top) else "false",
     }
     path = config_path()
     with path.open("w", encoding="utf-8") as f:

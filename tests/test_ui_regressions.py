@@ -251,3 +251,61 @@ class TestInputSetupFlow:
         assert dialog._detected_label.text() == "No wheel or pedals found"
         dialog.reject()
         assert not mapper.has_bindings()
+
+
+# ============================================================================
+# Keep window on top
+# ============================================================================
+
+
+class TestAlwaysOnTop:
+    """The pin button / Ctrl+T / Settings checkbox keeping the window on top."""
+
+    @staticmethod
+    def _window(monkeypatch):
+        from mmt_app.input import hid_backend
+        from mmt_app.ui.main_window import MainWindow
+
+        monkeypatch.setattr(hid_backend, "hid", None)  # No real controllers in tests
+        return MainWindow(app_name="MMT", version="test")
+
+    @staticmethod
+    def _on_top(window) -> bool:
+        from PySide6.QtCore import Qt
+
+        return bool(window.windowFlags() & Qt.WindowStaysOnTopHint)
+
+    def test_pin_button_toggles_window_and_setting(self, qapp, tmp_config, monkeypatch) -> None:
+        window = self._window(monkeypatch)
+        window.show()
+        assert not self._on_top(window)
+
+        window._pin_button.click()
+        assert self._on_top(window)
+        assert window.isVisible()  # Changing the flag must not leave the window hidden
+        assert window._settings_tab.always_on_top
+
+        window._pin_button.click()
+        assert not self._on_top(window)
+        assert not window._settings_tab.always_on_top
+        window.close()
+
+    def test_settings_checkbox_drives_pin(self, qapp, tmp_config, monkeypatch) -> None:
+        window = self._window(monkeypatch)
+        window._settings_tab._display_settings._always_on_top_checkbox.setChecked(True)
+        assert self._on_top(window)
+        assert window._pin_button.isChecked()
+        window.close()
+
+    def test_survives_restart(self, qapp, tmp_config, monkeypatch) -> None:
+        window = self._window(monkeypatch)
+        window.show()
+        window._pin_button.click()
+        window.close()
+        assert config.load_ui_config().always_on_top
+
+        reopened = self._window(monkeypatch)
+        assert self._on_top(reopened)
+        assert reopened._pin_button.isChecked()
+        assert reopened._settings_tab.always_on_top
+        reopened.close()

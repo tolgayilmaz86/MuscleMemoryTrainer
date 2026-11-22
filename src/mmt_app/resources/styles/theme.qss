@@ -167,3 +167,19 @@ QTextEdit {
     border: 1px solid #1f2937;
     border-radius: 6px;
 }
+
+QToolButton#pinButton {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 14px;
+}
+
+QToolButton#pinButton:hover {
+    background: #334155;
+}
+
+QToolButton#pinButton:checked {
+    background: #22c55e;
+}

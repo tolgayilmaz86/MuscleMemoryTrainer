@@ -54,6 +54,7 @@ class DisplaySettingsGroup(QGroupBox):
         on_update_rate_changed: Callable[[int], None] | None = None,
         on_steering_visible_changed: Callable[[bool], None] | None = None,
         on_watermark_visible_changed: Callable[[bool], None] | None = None,
+        on_always_on_top_changed: Callable[[bool], None] | None = None,
         on_settings_changed: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the display settings group.
@@ -65,6 +66,7 @@ class DisplaySettingsGroup(QGroupBox):
             on_update_rate_changed: Callback when update rate changes.
             on_steering_visible_changed: Callback when steering visibility changes.
             on_watermark_visible_changed: Callback when watermark visibility changes.
+            on_always_on_top_changed: Callback when "keep window on top" changes.
             on_settings_changed: Callback for any setting change (for persistence).
         """
         super().__init__("Display Settings", parent)
@@ -74,6 +76,7 @@ class DisplaySettingsGroup(QGroupBox):
         self._on_update_rate_changed = on_update_rate_changed or (lambda _: None)
         self._on_steering_visible_changed = on_steering_visible_changed or (lambda _: None)
         self._on_watermark_visible_changed = on_watermark_visible_changed or (lambda _: None)
+        self._on_always_on_top_changed = on_always_on_top_changed or (lambda _: None)
         self._on_settings_changed = on_settings_changed or (lambda: None)
 
         self._build_ui()
@@ -111,6 +114,11 @@ class DisplaySettingsGroup(QGroupBox):
     def show_watermark(self) -> bool:
         """Return whether watermark should be visible on charts."""
         return self._show_watermark_checkbox.isChecked()
+
+    @property
+    def always_on_top(self) -> bool:
+        """Return whether the main window should stay above other windows."""
+        return self._always_on_top_checkbox.isChecked()
 
     # -------------------------------------------------------------------------
     # Public setters
@@ -162,6 +170,12 @@ class DisplaySettingsGroup(QGroupBox):
             self._show_watermark_checkbox.blockSignals(True)
             self._show_watermark_checkbox.setChecked(visible)
             self._show_watermark_checkbox.blockSignals(False)
+
+    def set_always_on_top(self, enabled: bool) -> None:
+        """Sync the "keep window on top" checkbox without emitting change callbacks."""
+        self._always_on_top_checkbox.blockSignals(True)
+        self._always_on_top_checkbox.setChecked(enabled)
+        self._always_on_top_checkbox.blockSignals(False)
 
     # -------------------------------------------------------------------------
     # UI construction
@@ -268,6 +282,16 @@ class DisplaySettingsGroup(QGroupBox):
         self._show_watermark_checkbox.stateChanged.connect(self._on_watermark_visible_changed_internal)
         self._show_watermark_checkbox.stateChanged.connect(self._on_settings_changed)
         form.addRow("", self._show_watermark_checkbox)
+
+        # Keep window on top checkbox
+        self._always_on_top_checkbox = QCheckBox("Keep window on top of other windows (Ctrl+T)")
+        self._always_on_top_checkbox.setToolTip(
+            "Keeps the trainer visible over your sim. Works with windowed and borderless\n"
+            "games; exclusive fullscreen games still draw over every other window."
+        )
+        self._always_on_top_checkbox.toggled.connect(self._on_always_on_top_changed)
+        self._always_on_top_checkbox.toggled.connect(self._on_settings_changed)
+        form.addRow("", self._always_on_top_checkbox)
 
     def _build_slider_row(self, slider: QSlider, label: QLabel) -> QWidget:
         """Build a slider row with label."""

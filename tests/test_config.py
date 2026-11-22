@@ -428,6 +428,15 @@ class TestUiConfigWindowState:
             app = QApplication([])
         yield app
 
+    def test_always_on_top_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
+        assert config.UiConfig(throttle_target=1, brake_target=1, grid_step_percent=10).always_on_top is False
+        config.save_ui_config(
+            config.UiConfig(throttle_target=90, brake_target=70, grid_step_percent=20, always_on_top=True)
+        )
+        loaded = config.load_ui_config()
+        assert loaded is not None and loaded.always_on_top is True
+
     def test_last_tab_roundtrip(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(config, "config_path", lambda: tmp_path / "config.ini")
         config.save_ui_config(

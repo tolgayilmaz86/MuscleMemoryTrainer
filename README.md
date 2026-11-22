@@ -48,6 +48,7 @@ And more to come...
 - **Threshold Training**: Hit floating brake-pressure targets; tracks hits, misses and streaks
 - **Audio Cues**: Optional sound notifications when targets are hit (preview and custom sounds in Settings)
 - **Keyboard Shortcuts**: `Space` to start/pause, `R` to reset
+- **Keep on Top**: Pin the window above your sim with the 📌 button, `Ctrl+T`, or Settings
 - **Persistent Settings**: All configurations saved automatically between sessions
 
 ---
@@ -104,6 +105,7 @@ python -m mmt_app
 |-----|------------------------------------------|
 | `Space` | Start / pause |
 | `R` | Reset |
+| `Ctrl+T` | Keep the window on top of other windows (any tab) |
 
 Training sessions pause automatically when you switch to another tab.
 

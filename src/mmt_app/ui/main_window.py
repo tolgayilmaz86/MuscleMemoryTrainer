@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QStatusBar,
     QTabWidget,
+    QToolButton,
     QWidget,
 )
 
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
         self._update_rate = _DEFAULT_UPDATE_RATE_HZ
         self._show_steering = False
         self._show_watermark = True
+        self._always_on_top = False
         self._steering_alpha = _STEERING_SMOOTHING_ALPHA
         self._steering_deadband = _STEERING_DEADBAND_PERCENT
 
@@ -122,6 +124,7 @@ class MainWindow(QMainWindow):
             on_update_rate_changed=self._on_settings_update_rate_changed,
             on_steering_visible_changed=self._on_settings_steering_visible_changed,
             on_watermark_visible_changed=self._on_settings_watermark_visible_changed,
+            on_always_on_top_changed=self._set_always_on_top,
             on_inputs_changed=self._on_inputs_changed,
         )
 
@@ -145,6 +148,16 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._threshold_training_tab, "Threshold Training")
         tabs.addTab(self._settings_tab, "Settings")
         tabs.addTab(self._about_tab, "About")
+
+        # Pin toggle in the tab bar corner: reachable from every tab.
+        self._pin_button = QToolButton()
+        self._pin_button.setObjectName("pinButton")
+        self._pin_button.setText("\U0001F4CC")
+        self._pin_button.setCheckable(True)
+        self._pin_button.setToolTip("Keep window on top of other windows (Ctrl+T)")
+        self._pin_button.toggled.connect(self._on_pin_toggled)
+        tabs.setCornerWidget(self._pin_button, Qt.TopRightCorner)
+
         self._tabs = tabs
         self.setCentralWidget(tabs)
 
@@ -172,6 +185,8 @@ class MainWindow(QMainWindow):
         self._start_shortcut.activated.connect(lambda: self._run_tab_action(start=True))
         self._reset_shortcut = QShortcut(QKeySequence(Qt.Key_R), self)
         self._reset_shortcut.activated.connect(lambda: self._run_tab_action(start=False))
+        self._on_top_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
+        self._on_top_shortcut.activated.connect(self._pin_button.toggle)
         self._tabs.currentChanged.connect(self._on_tab_changed)
         self._on_tab_changed(self._tabs.currentIndex())
 
@@ -334,6 +349,26 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_threshold_training_tab"):
             self._threshold_training_tab.set_watermark_visible(self._show_watermark)
 
+    def _on_pin_toggled(self, enabled: bool) -> None:
+        """Pin button / Ctrl+T: apply, mirror into Settings, and persist."""
+        self._set_always_on_top(enabled)
+        self._settings_tab.set_always_on_top(enabled)
+        self._schedule_save_ui_settings()
+
+    def _set_always_on_top(self, enabled: bool) -> None:
+        """Keep the window above all other windows (or stop doing so)."""
+        self._always_on_top = bool(enabled)
+        self._pin_button.blockSignals(True)
+        self._pin_button.setChecked(self._always_on_top)
+        self._pin_button.blockSignals(False)
+        if bool(self.windowFlags() & Qt.WindowStaysOnTopHint) == self._always_on_top:
+            return
+        # Changing window flags hides the window; show it again where it was.
+        was_visible = self.isVisible()
+        self.setWindowFlag(Qt.WindowStaysOnTopHint, self._always_on_top)
+        if was_visible:
+            self.show()
+
     def _set_grid_step(self, step_percent: int) -> None:
         """Set the telemetry grid step, snapping to 10% increments."""
         step_percent = max(10, min(50, (step_percent // 10) * 10))
@@ -349,6 +384,7 @@ class MainWindow(QMainWindow):
             update_hz=self._update_rate,
             show_steering=self._show_steering,
             show_watermark=self._show_watermark,
+            always_on_top=self._always_on_top,
             throttle_sound_enabled=self._settings_tab.sound_enabled("throttle"),
             throttle_sound_path=self._settings_tab.custom_sound_path("throttle"),
             brake_sound_enabled=self._settings_tab.sound_enabled("brake"),
@@ -383,6 +419,8 @@ class MainWindow(QMainWindow):
                 self._set_show_steering(ui_cfg.show_steering)
                 self._set_show_watermark(ui_cfg.show_watermark)
                 self._settings_tab.set_show_watermark(ui_cfg.show_watermark, update_checkbox=True)
+                self._settings_tab.set_always_on_top(ui_cfg.always_on_top)
+                self._set_always_on_top(ui_cfg.always_on_top)
                 self._settings_tab.apply_sound_settings(
                     throttle_enabled=ui_cfg.throttle_sound_enabled,
                     throttle_path=ui_cfg.throttle_sound_path,

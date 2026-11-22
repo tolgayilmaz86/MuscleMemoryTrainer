@@ -58,6 +58,7 @@ class SettingsTab(QWidget):
         on_update_rate_changed: Callable[[int], None] | None = None,
         on_steering_visible_changed: Callable[[bool], None] | None = None,
         on_watermark_visible_changed: Callable[[bool], None] | None = None,
+        on_always_on_top_changed: Callable[[bool], None] | None = None,
         on_inputs_changed: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the settings tab.
@@ -70,6 +71,7 @@ class SettingsTab(QWidget):
             on_update_rate_changed: Callback when update rate changes.
             on_steering_visible_changed: Callback when steering visibility changes.
             on_watermark_visible_changed: Callback when watermark visibility changes.
+            on_always_on_top_changed: Callback when "keep window on top" changes.
             on_inputs_changed: Callback when bindings change or controllers come and go.
         """
         super().__init__(parent)
@@ -108,6 +110,7 @@ class SettingsTab(QWidget):
             on_update_rate_changed=on_update_rate_changed,
             on_steering_visible_changed=on_steering_visible_changed,
             on_watermark_visible_changed=on_watermark_visible_changed,
+            on_always_on_top_changed=on_always_on_top_changed,
             on_settings_changed=self._schedule_save_ui_settings,
         )
 
@@ -147,6 +150,11 @@ class SettingsTab(QWidget):
     def show_watermark(self) -> bool:
         """Return whether watermark should be visible on charts."""
         return self._display_settings.show_watermark
+
+    @property
+    def always_on_top(self) -> bool:
+        """Return whether the main window should stay above other windows."""
+        return self._display_settings.always_on_top
 
     @property
     def throttle_target(self) -> int:
@@ -237,6 +245,10 @@ class SettingsTab(QWidget):
         """Set watermark visibility and optionally sync the checkbox."""
         self._display_settings.set_show_watermark(visible, update_checkbox=update_checkbox)
 
+    def set_always_on_top(self, enabled: bool) -> None:
+        """Sync the "keep window on top" checkbox (no change callbacks)."""
+        self._display_settings.set_always_on_top(enabled)
+
     def set_throttle_target(self, value: int) -> None:
         """Set the throttle target percentage."""
         self._display_settings.set_throttle_target(value)
@@ -293,6 +305,7 @@ class SettingsTab(QWidget):
             update_hz=self._display_settings.update_rate,
             show_steering=self._display_settings.show_steering,
             show_watermark=self._display_settings.show_watermark,
+            always_on_top=self._display_settings.always_on_top,
             throttle_sound_enabled=self._sound_settings.sound_enabled("throttle"),
             throttle_sound_path=self._sound_settings.custom_sound_path("throttle"),
             brake_sound_enabled=self._sound_settings.sound_enabled("brake"),
